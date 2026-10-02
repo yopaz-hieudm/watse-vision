@@ -1,0 +1,47 @@
+experiment_id: E1
+experiment_name: mobilenet_v3_small_baseline
+seed: 42
+device: auto
+
+data:
+  root: data/raw/RealWaste
+  train_csv: data/splits/train.csv
+  val_csv: data/splits/val.csv
+  test_csv: data/splits/test.csv
+  image_size: 224
+  resize_size: 256
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+  split: {train: 0.70, validation: 0.15, test: 0.15}
+  augmentation:
+    enabled: false
+    random_resized_crop_scale: [0.8, 1.0]
+    horizontal_flip_probability: 0.5
+    rotation_degrees: 15
+    color_jitter: {brightness: 0.2, contrast: 0.2, saturation: 0.2, hue: 0.05}
+
+model:
+  name: mobilenet_v3_small
+  weights: IMAGENET1K_V1
+  pretrained: true
+  num_classes: 9
+  train_backbone: false
+
+training:
+  epochs: 30
+  mixed_precision: true
+  optimizer: {name: adamw, learning_rate: 0.001, weight_decay: 0.0001}
+  loss: {name: cross_entropy, label_smoothing: 0.0}
+  scheduler:
+    name: reduce_lr_on_plateau
+    monitor: val_macro_f1
+    mode: max
+    factor: 0.5
+    patience: 2
+    min_learning_rate: 0.000001
+  early_stopping: {monitor: val_macro_f1, mode: max, patience: 5, minimum_delta: 0.0001}
+
+checkpoint: {monitor: val_macro_f1, mode: max, save_best: true, save_last: true}
+output: {directory: outputs/experiments/mobilenet_v3_small_baseline}
+

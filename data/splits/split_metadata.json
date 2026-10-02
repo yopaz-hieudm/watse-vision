@@ -1,0 +1,14 @@
+{
+  "seed": 42,
+  "ratios": {
+    "train": 0.7,
+    "validation": 0.15,
+    "test": 0.15
+  },
+  "counts": {
+    "train": 3326,
+    "validation": 713,
+    "test": 713
+  },
+  "fingerprint": "782706fcf74b6ed8e1e6edf4474f4503260106e85cf1f2717ef1c03dc944e6db"
+}
