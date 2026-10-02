@@ -13,6 +13,7 @@ from realwaste.config import ConfigError, load_config, validate_config
     [
         "mobilenet_v3_small_baseline.yaml",
         "mobilenet_v3_small_aug.yaml",
+        "mobilenet_v3_small_finetune.yaml",
         "resnet18_baseline.yaml",
         "resnet18_aug.yaml",
     ],
