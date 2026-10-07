@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from html import escape
+from pathlib import Path
+from typing import Any, Iterator
+
+import streamlit as st
+import torch
+
+WORKFLOW_STEPS = (
+    ("data", "Dữ liệu", "Chuẩn bị và kiểm tra"),
+    ("train", "Huấn luyện", "Chạy E1–E4"),
+    ("evaluate", "Đánh giá", "Đo lường và giải thích"),
+    ("compare", "So sánh", "Chọn mô hình"),
+    ("predict", "Dự đoán", "Thử ảnh thực tế"),
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 2rem; padding-bottom: 3rem; max-width: 1440px;}
+        [data-testid="stMetric"] {
+            background: color-mix(in srgb, var(--background-color) 92%, #16a34a 8%);
+            border: 1px solid color-mix(in srgb, var(--text-color) 14%, transparent);
+            border-radius: 0.8rem;
+            padding: 0.8rem 1rem;
+        }
+        .rw-subtitle {color: #64748b; margin-top: -0.5rem; margin-bottom: 1.25rem;}
+        .rw-ok {color: #15803d; font-weight: 650;}
+        .rw-warn {color: #b45309; font-weight: 650;}
+        .rw-error {color: #b91c1c; font-weight: 650;}
+        .rw-muted {color: #64748b; font-size: 0.92rem;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def page_header(title: str, description: str) -> None:
+    inject_styles()
+    st.title(title)
+    st.markdown(f'<p class="rw-subtitle">{description}</p>', unsafe_allow_html=True)
+
+
+@st.cache_resource
+def get_registry():
+    from realwaste.ui.experiment_registry import ExperimentRegistry
+
+    return ExperimentRegistry(PROJECT_ROOT)
+
+
+@st.cache_resource
+def get_reader():
+    from realwaste.ui.artifact_reader import ArtifactReader
+
+    return ArtifactReader(PROJECT_ROOT)
+
+
+@st.cache_resource
+def get_job_manager():
+    from realwaste.ui.job_manager import JobManager
+
+    return JobManager(PROJECT_ROOT)
+
+
+def device_details() -> tuple[str, str]:
+    if torch.cuda.is_available():
+        return "CUDA", torch.cuda.get_device_name(0)
+    if torch.backends.mps.is_available():
+        return "MPS", "Apple Metal Performance Shaders"
+    return "CPU", "Không phát hiện GPU tăng tốc"
+
+
+def path_label(path: str | Path | None) -> str:
+    if path is None:
+        return "—"
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
+def format_number(value: Any, digits: int = 4) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def format_timestamp(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+    except ValueError:
+        return value
+
+
+def show_error(message: str) -> None:
+    st.error(message, icon="🚫")
+
+
+def show_warning(message: str) -> None:
+    st.warning(message, icon="⚠️")
+
+
+def show_success(message: str) -> None:
+    st.success(message, icon="✅")

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import streamlit as st
 import torch
+
+WORKFLOW_STEPS = (
+    ("data", "Dữ liệu", "Chuẩn bị và kiểm tra"),
+    ("train", "Huấn luyện", "Chạy E1–E4"),
+    ("evaluate", "Đánh giá", "Đo lường và giải thích"),
+    ("compare", "So sánh", "Chọn mô hình"),
+    ("predict", "Dự đoán", "Thử ảnh thực tế"),
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -14,28 +24,298 @@ def inject_styles() -> None:
     st.markdown(
         """
         <style>
-        .block-container {padding-top: 2rem; padding-bottom: 3rem; max-width: 1440px;}
+        :root {
+            --rw-green-700: #15803d;
+            --rw-green-600: #16a34a;
+            --rw-green-50: #f0fdf4;
+            --rw-slate-900: #17211b;
+            --rw-slate-600: #64748b;
+            --rw-slate-300: #cbd5e1;
+            --rw-slate-200: #e2e8f0;
+            --rw-slate-50: #f8fafc;
+            --rw-radius: 0.9rem;
+        }
+        .block-container {
+            padding-top: 1.6rem;
+            padding-bottom: 4rem;
+            max-width: 1240px;
+        }
+        .rw-page-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+        }
+        .rw-page-icon {
+            display: grid;
+            place-items: center;
+            flex: 0 0 3rem;
+            height: 3rem;
+            border-radius: 0.85rem;
+            background: var(--rw-green-50);
+            border: 1px solid #bbf7d0;
+            font-size: 1.45rem;
+        }
+        .rw-eyebrow {
+            color: var(--rw-green-700);
+            font-size: 0.76rem;
+            font-weight: 750;
+            letter-spacing: 0.08em;
+            line-height: 1.2;
+            margin: 0 0 0.28rem;
+            text-transform: uppercase;
+        }
+        .rw-page-title {
+            color: var(--rw-slate-900);
+            font-size: clamp(1.75rem, 3vw, 2.35rem);
+            font-weight: 760;
+            letter-spacing: -0.035em;
+            line-height: 1.12;
+            margin: 0;
+        }
+        .rw-subtitle {
+            color: var(--rw-slate-600);
+            font-size: 1rem;
+            line-height: 1.55;
+            margin: 0.42rem 0 0;
+            max-width: 780px;
+        }
+        .rw-workflow {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.5rem;
+            margin: 0 0 1.6rem;
+        }
+        .rw-workflow-step {
+            min-height: 4.2rem;
+            padding: 0.72rem 0.8rem;
+            border: 1px solid var(--rw-slate-200);
+            border-radius: 0.75rem;
+            background: #fff;
+        }
+        .rw-workflow-step.is-current {
+            border-color: var(--rw-green-600);
+            background: var(--rw-green-50);
+            box-shadow: inset 0 0 0 1px var(--rw-green-600);
+        }
+        .rw-workflow-step.is-complete {border-color: #bbf7d0;}
+        .rw-workflow-step.is-partial {border-color: #fde68a;}
+        .rw-step-index {
+            color: var(--rw-slate-600);
+            font-size: 0.7rem;
+            font-weight: 750;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .rw-workflow-step.is-current .rw-step-index,
+        .rw-workflow-step.is-complete .rw-step-index {color: var(--rw-green-700);}
+        .rw-step-title {
+            color: var(--rw-slate-900);
+            font-size: 0.92rem;
+            font-weight: 720;
+            line-height: 1.2;
+            margin-top: 0.16rem;
+        }
+        .rw-step-description {
+            color: var(--rw-slate-600);
+            font-size: 0.74rem;
+            line-height: 1.3;
+            margin-top: 0.16rem;
+        }
+        .rw-section-header {margin: 2rem 0 0.85rem;}
+        .rw-section-title {
+            color: var(--rw-slate-900);
+            font-size: 1.2rem;
+            font-weight: 740;
+            letter-spacing: -0.015em;
+            line-height: 1.3;
+            margin: 0;
+        }
+        .rw-section-description {
+            color: var(--rw-slate-600);
+            font-size: 0.9rem;
+            line-height: 1.45;
+            margin: 0.22rem 0 0;
+        }
+        .rw-panel-heading {
+            color: var(--rw-slate-900);
+            font-size: 1rem;
+            font-weight: 720;
+            margin: 0 0 0.15rem;
+        }
+        .rw-panel-description {
+            color: var(--rw-slate-600);
+            font-size: 0.86rem;
+            line-height: 1.45;
+            margin: 0 0 0.85rem;
+        }
+        .rw-empty-state {
+            border: 1px dashed var(--rw-slate-300);
+            border-radius: var(--rw-radius);
+            background: var(--rw-slate-50);
+            padding: 2rem 1.25rem;
+            text-align: center;
+        }
+        .rw-empty-icon {font-size: 1.7rem; margin-bottom: 0.45rem;}
+        .rw-empty-title {font-weight: 720; margin-bottom: 0.25rem;}
+        .rw-empty-description {color: var(--rw-slate-600); font-size: 0.9rem;}
         [data-testid="stMetric"] {
             background: color-mix(in srgb, var(--background-color) 92%, #16a34a 8%);
             border: 1px solid color-mix(in srgb, var(--text-color) 14%, transparent);
-            border-radius: 0.8rem;
-            padding: 0.8rem 1rem;
+            border-radius: var(--rw-radius);
+            padding: 0.9rem 1rem;
         }
-        .rw-subtitle {color: #64748b; margin-top: -0.5rem; margin-bottom: 1.25rem;}
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            border-color: var(--rw-slate-200);
+            border-radius: var(--rw-radius);
+        }
+        .stButton > button, .stDownloadButton > button {
+            min-height: 2.65rem;
+            border-radius: 0.7rem;
+            font-weight: 650;
+        }
+        [data-testid="stDataFrame"] {border-radius: 0.75rem; overflow: hidden;}
         .rw-ok {color: #15803d; font-weight: 650;}
         .rw-warn {color: #b45309; font-weight: 650;}
         .rw-error {color: #b91c1c; font-weight: 650;}
         .rw-muted {color: #64748b; font-size: 0.92rem;}
+        @media (max-width: 900px) {
+            .rw-workflow {grid-template-columns: 1fr;}
+            .rw-workflow-step {min-height: auto;}
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def page_header(title: str, description: str) -> None:
+def page_header(
+    title: str,
+    description: str,
+    *,
+    icon: str = "♻️",
+    eyebrow: str = "RealWaste Control Center",
+) -> None:
     inject_styles()
-    st.title(title)
-    st.markdown(f'<p class="rw-subtitle">{description}</p>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <header class="rw-page-header">
+            <div class="rw-page-icon" aria-hidden="true">{escape(icon)}</div>
+            <div>
+                <p class="rw-eyebrow">{escape(eyebrow)}</p>
+                <h1 class="rw-page-title">{escape(title)}</h1>
+                <p class="rw-subtitle">{escape(description)}</p>
+            </div>
+        </header>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _workflow_statuses() -> dict[str, str]:
+    data_ready = (
+        (PROJECT_ROOT / "outputs/eda/dataset_summary.json").is_file()
+        and (PROJECT_ROOT / "data/splits/split_metadata.json").is_file()
+    )
+    experiment_dirs = [
+        PROJECT_ROOT / "outputs/experiments" / name
+        for name in (
+            "mobilenet_v3_small_baseline",
+            "resnet18_baseline",
+            "mobilenet_v3_small_aug",
+            "resnet18_aug",
+        )
+    ]
+    trained_count = sum(
+        (directory / "best.pt").is_file() or (directory / "last.pt").is_file()
+        for directory in experiment_dirs
+    )
+    evaluated_count = sum(
+        (directory / "evaluation/test/metrics.json").is_file()
+        for directory in experiment_dirs
+    )
+    comparison_ready = (
+        PROJECT_ROOT / "outputs/comparison/experiment_summary.csv"
+    ).is_file()
+    return {
+        "data": "complete" if data_ready else "pending",
+        "train": "complete" if trained_count == 4 else "partial" if trained_count else "pending",
+        "evaluate": (
+            "complete" if evaluated_count == 4 else "partial" if evaluated_count else "pending"
+        ),
+        "compare": "complete" if comparison_ready else "pending",
+        "predict": "complete" if trained_count else "pending",
+    }
+
+
+def render_workflow(current: str | None = None) -> None:
+    statuses = _workflow_statuses()
+    cards: list[str] = []
+    for index, (step_id, title, description) in enumerate(WORKFLOW_STEPS, start=1):
+        status = statuses[step_id]
+        classes = ["rw-workflow-step", f"is-{status}"]
+        if current == step_id:
+            classes.append("is-current")
+        marker = "✓" if status == "complete" else f"0{index}"
+        cards.append(
+            f"""
+            <div class="{' '.join(classes)}">
+                <div class="rw-step-index">{marker}</div>
+                <div class="rw-step-title">{escape(title)}</div>
+                <div class="rw-step-description">{escape(description)}</div>
+            </div>
+            """
+        )
+    st.markdown(
+        f'<nav class="rw-workflow" aria-label="Quy trình RealWaste">{"".join(cards)}</nav>',
+        unsafe_allow_html=True,
+    )
+
+
+def section_header(title: str, description: str | None = None) -> None:
+    detail = (
+        f'<p class="rw-section-description">{escape(description)}</p>' if description else ""
+    )
+    st.markdown(
+        f"""
+        <div class="rw-section-header">
+            <h2 class="rw-section-title">{escape(title)}</h2>
+            {detail}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@contextmanager
+def content_panel(
+    title: str | None = None,
+    description: str | None = None,
+) -> Iterator[None]:
+    with st.container(border=True):
+        if title:
+            st.markdown(
+                f'<p class="rw-panel-heading">{escape(title)}</p>', unsafe_allow_html=True
+            )
+        if description:
+            st.markdown(
+                f'<p class="rw-panel-description">{escape(description)}</p>',
+                unsafe_allow_html=True,
+            )
+        yield
+
+
+def empty_state(title: str, description: str, *, icon: str = "🧭") -> None:
+    st.markdown(
+        f"""
+        <div class="rw-empty-state">
+            <div class="rw-empty-icon" aria-hidden="true">{escape(icon)}</div>
+            <div class="rw-empty-title">{escape(title)}</div>
+            <div class="rw-empty-description">{escape(description)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource
