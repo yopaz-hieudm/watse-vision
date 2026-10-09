@@ -842,3 +842,242 @@ cần hoàn thiện các kiểm soát sau để tránh sinh kết quả sai ho�
 - [x] Bổ sung test hardening; toàn bộ pytest và Ruff đã sạch ngày 02/10/2026.
 - [ ] Huấn luyện E2-E4.
 - [ ] Đánh giá Test E1-E4, tạo comparison và Grad-CAM nghiệm thu.
+
+## 14. Tái cấu trúc điều phối workflow trung tâm
+
+### 14.1. Vấn đề nghiệp vụ hiện tại
+
+Các trang Dữ liệu, Huấn luyện, Đánh giá, So sánh và Dự đoán đang tự đọc artefact,
+tự suy ra điều kiện cho phép thao tác và tự gọi `JobManager`. Mặc dù cùng phục vụ một
+pipeline, cách tổ chức này khiến mỗi trang hoạt động như một chức năng độc lập và tạo
+cảm giác các tab là những project rời rạc.
+
+`JobManager` hiện chỉ chịu trách nhiệm chạy, dừng và khôi phục trạng thái tiến trình nền.
+Nó không được dùng làm nơi chứa luật nghiệp vụ của toàn pipeline. `build_project_overview()`
+chỉ là view model đọc dữ liệu, chưa phải bộ điều phối vì không quản lý command, chuyển
+trạng thái hoặc điều kiện của bước tiếp theo.
+
+Mục tiêu của đợt tái cấu trúc là đưa toàn bộ luật “được làm gì tiếp theo” về một đầu mối,
+giữ ngữ cảnh experiment xuyên suốt các trang và biến các trang thành những góc nhìn khác
+nhau của cùng một workflow RealWaste.
+
+### 14.2. Mô hình nghiệp vụ thống nhất
+
+Phân biệt rõ các đối tượng:
+
+- `Project`: toàn bộ bài toán phân loại ảnh RealWaste. Phiên bản hiện tại chỉ có một project.
+- `DatasetSnapshot`: dataset đã xác minh, kết quả EDA và split fingerprint đang sử dụng.
+- `Experiment`: một cấu hình E1-E4 cùng output, checkpoint, history và kết quả đánh giá.
+- `Job`: một lần thực thi download, EDA, split, train, evaluate, compare hoặc Grad-CAM.
+- `Checkpoint`: artefact model của một experiment, có metadata để xác minh tính tương thích.
+- `WorkflowState`: ảnh chụp trạng thái tổng hợp của project tại một thời điểm.
+
+Luồng nghiệp vụ cấp project:
+
+```text
+Dữ liệu -> Split -> Huấn luyện E1-E4 -> Đánh giá -> So sánh -> Dự đoán
+```
+
+Trong đó Dữ liệu, Split và So sánh thuộc phạm vi project; Huấn luyện, Đánh giá và lựa
+chọn checkpoint thuộc phạm vi experiment; Dự đoán sử dụng checkpoint đã được chọn từ
+một experiment.
+
+### 14.3. Trạng thái workflow
+
+Không lưu một enum duy nhất làm nguồn sự thật vì project có thể hoàn thành một phần nhiều
+experiment cùng lúc. `WorkflowState` phải được dựng lại từ metadata và artefact đã xác minh,
+gồm tối thiểu:
+
+```python
+@dataclass(frozen=True)
+class WorkflowState:
+    data_ready: bool
+    eda_ready: bool
+    split_ready: bool
+    split_fingerprint: str | None
+    selected_experiment_id: str
+    experiments: dict[str, ExperimentState]
+    active_job: JobRecord | None
+    comparison_ready: bool
+    inference_checkpoint: Path | None
+    allowed_actions: frozenset[WorkflowAction]
+    next_action: WorkflowAction | None
+    blockers: tuple[str, ...]
+```
+
+Mỗi `ExperimentState` tối thiểu chứa trạng thái config, checkpoint, history, Validation,
+Test, khả năng resume và mức độ tương thích với split fingerprint hiện tại.
+
+Trạng thái hiển thị cấp cao được suy ra theo thứ tự:
+
+```text
+NO_DATA
+  -> DATA_READY
+  -> SPLIT_READY
+  -> TRAINING / PARTIALLY_TRAINED / TRAINED
+  -> EVALUATING / PARTIALLY_EVALUATED / EVALUATED
+  -> COMPARISON_READY
+  -> READY_FOR_INFERENCE
+```
+
+Job đang chạy là trạng thái phủ lên bước nghiệp vụ tương ứng, không thay thế trạng thái
+artefact đã hoàn thành trước đó.
+
+### 14.4. WorkflowCoordinator
+
+Tạo module mới:
+
+```text
+src/realwaste/workflow/
+├── __init__.py
+├── actions.py
+├── coordinator.py
+├── state.py
+├── policies.py
+└── errors.py
+```
+
+`WorkflowCoordinator` là API duy nhất mà UI sử dụng để đọc trạng thái và yêu cầu hành
+động nghiệp vụ. Interface mục tiêu:
+
+```python
+class WorkflowCoordinator:
+    def get_state(self, selected_experiment_id: str | None = None) -> WorkflowState: ...
+
+    def select_experiment(self, experiment_id: str) -> WorkflowState: ...
+
+    def execute(
+        self,
+        action: WorkflowAction,
+        *,
+        experiment_id: str | None = None,
+        options: dict | None = None,
+    ) -> JobRecord: ...
+
+    def recommend_next_action(
+        self,
+        experiment_id: str | None = None,
+    ) -> WorkflowAction | None: ...
+```
+
+Trách nhiệm của coordinator:
+
+- Tổng hợp dataset, EDA, split, experiment, checkpoint, evaluation, comparison và active job.
+- Xác định `allowed_actions`, `next_action` và lý do chặn của từng hành động.
+- Giữ experiment đang chọn làm ngữ cảnh chung của phiên UI.
+- Xác minh precondition ở backend trước khi giao job cho `JobManager`.
+- Chọn đúng checkpoint và output directory cho bước đánh giá, Grad-CAM hoặc dự đoán.
+- Phát hiện artefact stale khi split fingerprint hoặc config không còn khớp.
+- Trả lỗi nghiệp vụ có cấu trúc để UI hiển thị thông báo ngắn, không lộ traceback.
+
+Coordinator không trực tiếp train model, không quản lý PID và không tự sửa artefact. Sau
+khi precondition hợp lệ, coordinator ánh xạ action nghiệp vụ sang lời gọi `JobManager`.
+
+### 14.5. Phân chia trách nhiệm
+
+```text
+Streamlit pages
+    |
+    | đọc WorkflowState / gửi WorkflowAction
+    v
+WorkflowCoordinator
+    |-- ExperimentRegistry: config và đường dẫn E1-E4
+    |-- ArtifactReader: đọc artefact an toàn
+    |-- WorkflowPolicy: precondition, invalidation, next action
+    `-- JobManager: thực thi và quản lý tiến trình nền
+            `-- scripts/*.py: xử lý dữ liệu, train, evaluate, compare, Grad-CAM
+```
+
+Quy tắc bắt buộc:
+
+- UI không gọi `JobManager.start_job()` trực tiếp.
+- UI không tự quyết định một action có được phép chạy hay không.
+- `JobManager` không chứa luật về thứ tự Dữ liệu -> Train -> Evaluate -> Compare.
+- Script CLI vẫn tự kiểm tra invariant quan trọng để không phụ thuộc vào UI hoặc coordinator.
+- View model chỉ chuyển `WorkflowState` thành dữ liệu trình bày, không thực hiện command.
+
+### 14.6. Ngữ cảnh xuyên suốt các trang
+
+Experiment đang chọn được lưu trong `st.session_state` bằng một khóa duy nhất, mặc định E1.
+Sidebar hiển thị selector E1-E4 và tóm tắt trạng thái của experiment đang chọn. Khi đổi
+experiment, toàn bộ trang Huấn luyện, Đánh giá và Dự đoán phải dùng cùng ngữ cảnh này.
+
+Mỗi trang nhận state mới từ coordinator sau mỗi Streamlit rerun:
+
+- Tổng quan: hiển thị tiến độ project và nút “Tiếp tục” theo `next_action`.
+- Dữ liệu: hiển thị trạng thái cấp project và các action chuẩn bị dataset/split.
+- Huấn luyện: dùng experiment đang chọn, không tạo selector riêng khác nguồn.
+- Đánh giá: tự dùng checkpoint tương thích của experiment đang chọn; chỉ hỏi lại khi có
+  nhiều lựa chọn hợp lệ và lựa chọn làm thay đổi kết quả.
+- So sánh: là trang cấp project, chỉ chạy khi đủ bốn Test metrics tương thích.
+- Dự đoán: ưu tiên checkpoint Test Macro-F1 tốt nhất nhưng hiển thị rõ experiment đang dùng;
+  người dùng có thể đổi lựa chọn mà không làm thay đổi selected experiment ngoài ý muốn.
+
+Thanh workflow chung phải xuất hiện nhất quán trên các trang và lấy trạng thái từ
+`WorkflowState`, không tự quét file lần nữa trong component giao diện.
+
+### 14.7. Chính sách phụ thuộc và vô hiệu hóa artefact
+
+Coordinator phải đánh dấu artefact là `stale` thay vì coi file tồn tại là hợp lệ:
+
+- Dataset hoặc split fingerprint thay đổi: checkpoint, evaluation, comparison và lựa chọn
+  inference cũ không còn hợp lệ với workflow hiện tại.
+- Config experiment thay đổi: checkpoint/history không khớp config phải bị chặn resume.
+- Checkpoint thay đổi: evaluation gắn với checkpoint cũ không được coi là kết quả hiện hành.
+- Test metrics của bất kỳ E1-E4 thay đổi: comparison hiện tại phải được tạo lại.
+- Thiếu metadata cần thiết: action bị chặn và nêu rõ trường hoặc artefact cần bổ sung.
+
+Không tự động xóa artefact stale. UI hiển thị trạng thái và yêu cầu người dùng xác nhận khi
+cần chạy lại hoặc ghi đè, nhằm giữ khả năng audit kết quả cũ.
+
+### 14.8. Thứ tự triển khai
+
+1. Viết `WorkflowAction`, `ExperimentState`, `WorkflowState` và lỗi nghiệp vụ có cấu trúc.
+2. Tách các luật readiness/invalidation hiện nằm rải rác trong pages và view models sang
+   `WorkflowPolicy` thuần, không phụ thuộc Streamlit.
+3. Viết `WorkflowCoordinator.get_state()` từ `ExperimentRegistry`, `ArtifactReader` và
+   `JobManager` hiện có.
+4. Viết `execute()` cho từng action và giữ toàn bộ kiểm tra an toàn hiện hành.
+5. Tạo component chọn experiment chung và lưu một khóa trong `st.session_state`.
+6. Chuyển từng trang sang đọc coordinator; ưu tiên Tổng quan, Huấn luyện, Đánh giá, sau đó
+   Dữ liệu, So sánh và Dự đoán.
+7. Xóa các lời gọi trực tiếp từ pages tới `JobManager` sau khi migration hoàn tất.
+8. Chạy test, Ruff và smoke test toàn bộ luồng từ dữ liệu tới dự đoán.
+
+Migration phải thực hiện từng trang và giữ CLI hoạt động bình thường; không thay đổi format
+checkpoint hoặc output hiện có nếu không cần thiết.
+
+### 14.9. Kiểm thử bắt buộc
+
+Tạo tối thiểu:
+
+```text
+tests/test_workflow_state.py
+tests/test_workflow_policies.py
+tests/test_workflow_coordinator.py
+tests/test_workflow_ui_context.py
+```
+
+Các trường hợp cần kiểm tra:
+
+- Không có dataset chỉ cho phép action chuẩn bị/kiểm tra dữ liệu.
+- Có dataset nhưng thiếu split thì không cho train.
+- Chỉ một job nặng được chạy và action xung đột bị chặn ở coordinator.
+- E1 đã train nhưng chưa Test thì `next_action` là đánh giá E1.
+- Resume chỉ được phép với checkpoint đúng experiment, model và split fingerprint.
+- Compare chỉ được phép khi đủ E1-E4 Test metrics cùng fingerprint.
+- Thay split fingerprint làm checkpoint/evaluation/comparison cũ thành stale.
+- Đổi experiment ở một trang được phản ánh nhất quán sang các trang còn lại.
+- Trang UI không còn gọi trực tiếp `JobManager.start_job()`.
+- Các CLI guard vẫn từ chối thao tác không hợp lệ khi chạy ngoài UI.
+
+### 14.10. Điều kiện hoàn thành
+
+- Tất cả trang sử dụng cùng một `WorkflowCoordinator` và cùng selected experiment context.
+- Mỗi action có precondition, blocker và next action nhất quán giữa UI và backend.
+- Người dùng luôn nhìn thấy mình đang thao tác với experiment/checkpoint nào.
+- Sau khi một job hoàn thành, bước tiếp theo được cập nhật từ artefact thực tế mà không cần
+  người dùng chọn lại ngữ cảnh ở tab khác.
+- Không còn luật readiness hoặc đường dẫn output quan trọng bị sao chép giữa nhiều page.
+- Artefact stale được phát hiện, không bị dùng ngầm cho resume, compare hoặc inference.
+- Toàn bộ test cũ và test workflow mới chạy thành công; Ruff không có lỗi.
