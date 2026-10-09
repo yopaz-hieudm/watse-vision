@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import json
 import tempfile
 import time
 from pathlib import Path
@@ -9,8 +7,15 @@ from pathlib import Path
 import streamlit as st
 
 from app.components.charts import render_probability_chart
-from app.components.layout import get_registry, page_header, path_label, show_error
+from app.components.layout import (
+    get_workflow_state,
+    page_header,
+    path_label,
+    render_workflow,
+    show_error,
+)
 from realwaste.inference import Predictor
+from realwaste.workflow.state import WorkflowState
 
 
 @st.cache_resource(show_spinner=False)
@@ -19,41 +24,66 @@ def _load_predictor(checkpoint_path: str, modified_ns: int) -> Predictor:
     return Predictor(checkpoint_path)
 
 
-def _available_checkpoints() -> list[tuple[str, Path]]:
-    choices: list[tuple[str, Path, float, bool]] = []
-    for experiment in get_registry().list():
+def _available_checkpoints(state: WorkflowState) -> list[tuple[str, Path]]:
+    choices: list[tuple[str, Path, float, bool, bool]] = []
+    for experiment in state.experiments.values():
         score = float("-inf")
-        metrics_path = experiment.existing_metrics_path("test")
-        if metrics_path is not None:
-            with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
-                score = float(json.loads(metrics_path.read_text(encoding="utf-8"))["macro_f1"])
-        if experiment.best_checkpoint.is_file():
+        if experiment.test_metrics is not None:
+            try:
+                score = float(experiment.test_metrics.get("macro_f1", float("-inf")))
+            except (TypeError, ValueError):
+                score = float("-inf")
+        if experiment.best_checkpoint is not None and experiment.best_checkpoint_compatible:
             choices.append(
-                (f"{experiment.experiment_id} · best.pt", experiment.best_checkpoint, score, True)
+                (
+                    f"{experiment.experiment_id} · best.pt",
+                    experiment.best_checkpoint,
+                    score,
+                    experiment.experiment_id == state.selected_experiment_id,
+                    True,
+                )
             )
-        if experiment.last_checkpoint.is_file():
+        if experiment.last_checkpoint is not None and experiment.last_checkpoint_compatible:
             choices.append(
-                (f"{experiment.experiment_id} · last.pt", experiment.last_checkpoint, score, False)
+                (
+                    f"{experiment.experiment_id} · last.pt",
+                    experiment.last_checkpoint,
+                    score,
+                    experiment.experiment_id == state.selected_experiment_id,
+                    False,
+                )
             )
-    choices.sort(key=lambda item: (item[2], item[3], item[1].stat().st_mtime_ns), reverse=True)
-    return [(label, path) for label, path, _score, _is_best in choices]
+    choices.sort(
+        key=lambda item: (item[2], item[3], item[4], item[1].stat().st_mtime_ns),
+        reverse=True,
+    )
+    return [(label, path) for label, path, _score, _selected, _best in choices]
 
 
+state = get_workflow_state()
 page_header(
     "Dự đoán ảnh rác",
-    "Chọn checkpoint đã huấn luyện, tải một ảnh lên và xem các lớp có xác suất cao nhất.",
+    "Dùng checkpoint hiện hành trong cùng workflow để phân loại một ảnh mới.",
 )
+render_workflow("predict", state)
 
-checkpoints = _available_checkpoints()
+checkpoints = _available_checkpoints(state)
 if not checkpoints:
-    st.info(
-        "Chưa tìm thấy `best.pt` hoặc `last.pt`. Hãy huấn luyện ít nhất một experiment ở trang "
-        "Huấn luyện trước."
-    )
+    st.info("Chưa tìm thấy checkpoint tương thích. Hãy huấn luyện experiment đang chọn trước.")
     st.stop()
 
 labels = [label for label, _path in checkpoints]
-selected_label = st.selectbox("Checkpoint", labels)
+default_index = 0
+if state.inference_checkpoint is not None:
+    default_index = next(
+        (
+            index
+            for index, (_label, path) in enumerate(checkpoints)
+            if path == state.inference_checkpoint
+        ),
+        0,
+    )
+selected_label = st.selectbox("Checkpoint", labels, index=default_index)
 checkpoint = dict(checkpoints)[selected_label]
 top_k = st.slider("Số lớp hiển thị", min_value=1, max_value=5, value=3)
 uploaded = st.file_uploader(
@@ -62,8 +92,10 @@ uploaded = st.file_uploader(
     help="Ứng dụng không lưu lâu dài ảnh bạn tải lên.",
 )
 
+st.caption(
+    f"Ngữ cảnh: {state.selected_experiment_id} · Checkpoint suy luận: {path_label(checkpoint)}"
+)
 if uploaded is None:
-    st.caption(f"Đang chọn: `{path_label(checkpoint)}`")
     st.stop()
 
 if uploaded.size > 20 * 1024 * 1024:
@@ -83,7 +115,7 @@ try:
         started = time.perf_counter()
         predictions = predictor.predict(image_path, top_k=top_k)
         elapsed_ms = (time.perf_counter() - started) * 1000
-except Exception as error:  # Streamlit boundary: show a friendly message, log details in terminal.
+except Exception as error:
     show_error(f"Không thể dự đoán ảnh: {error}")
     st.stop()
 
@@ -95,6 +127,7 @@ with right:
     metric_right.metric("Độ tin cậy", f"{winner['probability']:.2%}")
     render_probability_chart(predictions)
     st.caption(
-        f"Model: `{predictor.config['model']['name']}` · "
-        f"Thời gian suy luận: {elapsed_ms:.1f} ms · Checkpoint: `{path_label(checkpoint)}`"
+        f"Model: {predictor.config['model']['name']} · "
+        f"Thời gian suy luận: {elapsed_ms:.1f} ms · "
+        f"Checkpoint: {path_label(checkpoint)}"
     )

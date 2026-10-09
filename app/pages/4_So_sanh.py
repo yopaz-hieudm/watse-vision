@@ -1,59 +1,41 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 from app.components.layout import (
     PROJECT_ROOT,
-    get_job_manager,
-    get_registry,
+    get_workflow_coordinator,
+    get_workflow_state,
     page_header,
+    render_workflow,
     show_error,
     show_success,
     show_warning,
 )
+from realwaste.workflow import WorkflowAction
 
-
-def _read_metrics(path: Path) -> dict | None:
-    if not path.is_file():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
-    except (OSError, json.JSONDecodeError):
-        return None
-
+state = get_workflow_state()
+coordinator = get_workflow_coordinator()
 
 page_header(
     "So sánh E1–E4",
-    "Xếp hạng theo Test Macro-F1 và đo ảnh hưởng của augmentation trên cùng một split.",
+    "Xếp hạng các Test metrics hiện hành trên cùng split fingerprint.",
 )
+render_workflow("compare", state)
 
-experiments = get_registry().list()
 rows = []
 missing = []
-fingerprints: set[str] = set()
-for experiment in experiments:
-    metrics_path = experiment.metrics_path("test")
-    metrics = _read_metrics(metrics_path)
-    if (
-        metrics is None
-        or str(metrics.get("split", "test")).lower() != "test"
-        or not metrics.get("split_fingerprint")
-    ):
+for experiment in state.experiments.values():
+    metrics = experiment.test_metrics
+    if metrics is None:
         missing.append(experiment.experiment_id)
-        metrics = None
-    else:
-        fingerprints.add(str(metrics["split_fingerprint"]))
     rows.append(
         {
             "Experiment": experiment.experiment_id,
-            "Model": experiment.config["model"]["name"],
-            "Augmentation": bool(experiment.config["data"]["augmentation"]["enabled"]),
-            "Test metrics": "Đã có" if metrics else "Còn thiếu",
+            "Model": experiment.model_name,
+            "Augmentation": experiment.augmentation_enabled,
+            "Test metrics": "Hiện hành" if metrics else "Thiếu/Stale",
             "Accuracy": metrics.get("accuracy") if metrics else None,
             "Macro-F1": metrics.get("macro_f1") if metrics else None,
         }
@@ -70,18 +52,18 @@ st.dataframe(
 )
 
 if missing:
-    show_warning(f"Cần đánh giá Test cho: {', '.join(missing)}.")
+    show_warning(f"Cần đánh giá Test hiện hành cho: {', '.join(missing)}.")
 
-fingerprint_mismatch = not missing and len(fingerprints) != 1
-if fingerprint_mismatch:
-    show_warning("Kết quả E1-E4 không cùng split fingerprint; cần đánh giá lại trước khi so sánh.")
-
+compare_action = WorkflowAction.COMPARE_EXPERIMENTS
 if st.button(
-    "Tạo lại bảng so sánh", disabled=bool(missing) or fingerprint_mismatch, type="primary"
+    "Tạo lại bảng so sánh",
+    disabled=compare_action not in state.allowed_actions,
+    type="primary",
 ):
     try:
-        job = get_job_manager().start_job("compare")
-        show_success(f"Đã tạo job `{job.job_id}`.")
+        job = coordinator.execute(compare_action)
+        show_success(f"Đã tạo job {job.job_id}.")
+        st.rerun()
     except Exception as error:
         show_error(str(error))
 
@@ -90,7 +72,7 @@ summary_path = comparison_dir / "experiment_summary.csv"
 impact_path = comparison_dir / "augmentation_impact.csv"
 chart_path = comparison_dir / "metrics_comparison.png"
 
-if summary_path.is_file():
+if state.comparison_ready:
     st.subheader("Bảng xếp hạng")
     summary = pd.read_csv(summary_path).sort_values("macro_f1", ascending=False)
     st.dataframe(summary, width="stretch", hide_index=True)
@@ -101,10 +83,8 @@ if summary_path.is_file():
         mime="text/csv",
     )
 
-if chart_path.is_file():
     st.image(str(chart_path), caption="Accuracy và Macro-F1", width="stretch")
 
-if impact_path.is_file():
     st.subheader("Ảnh hưởng của augmentation")
     impact = pd.read_csv(impact_path)
     st.dataframe(impact, width="stretch", hide_index=True)
@@ -114,6 +94,5 @@ if impact_path.is_file():
         file_name=impact_path.name,
         mime="text/csv",
     )
-
-if not any(path.is_file() for path in (summary_path, impact_path, chart_path)):
-    st.info("Chưa có artefact so sánh. Hãy đánh giá đủ E1–E4 trên Test trước.")
+else:
+    st.info("Chưa có artefact so sánh hiện hành. Hãy đánh giá đủ E1–E4 trên Test và tạo lại bảng.")

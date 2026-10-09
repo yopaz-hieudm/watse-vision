@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
@@ -16,29 +13,23 @@ from app.components.gallery import (
 )
 from app.components.layout import (
     PROJECT_ROOT,
-    get_job_manager,
+    get_workflow_coordinator,
+    get_workflow_state,
     page_header,
+    render_workflow,
     show_error,
     show_success,
     show_warning,
 )
 from realwaste.constants import CLASS_NAMES
+from realwaste.workflow import WorkflowAction
 
 
-def _read_json(path: Path) -> dict:
-    if not path.is_file():
-        return {}
+def _start(action: WorkflowAction, *, options: dict | None = None) -> None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _start(kind: str, *, args: dict | None = None) -> None:
-    try:
-        job = get_job_manager().start_job(kind, args=args)
-        show_success(f"Đã tạo job `{job.job_id}`. Theo dõi ở thanh bên hoặc trang Tổng quan.")
+        job = get_workflow_coordinator().execute(action, options=options)
+        show_success(f"Đã tạo job {job.job_id}. Theo dõi ở thanh bên hoặc trang Tổng quan.")
+        st.rerun()
     except Exception as error:
         show_error(str(error))
 
@@ -58,18 +49,18 @@ def _load_thumbnail(path: str, modified_ns: int) -> bytes:
     return create_thumbnail(path)
 
 
+state = get_workflow_state()
 page_header(
     "Dữ liệu RealWaste",
     "Kiểm tra archive, xem EDA và quản lý split dùng chung cho toàn bộ E1–E4.",
 )
+render_workflow("data", state)
 
-summary_path = PROJECT_ROOT / "outputs/eda/dataset_summary.json"
-split_path = PROJECT_ROOT / "data/splits/split_metadata.json"
 checksum_path = PROJECT_ROOT / "data/checksums/realwaste.sha256"
 eda_dir = PROJECT_ROOT / "outputs/eda"
 dataset_root = PROJECT_ROOT / "data/raw/RealWaste"
-summary = _read_json(summary_path)
-split = _read_json(split_path)
+summary = dict(state.dataset_summary or {})
+split = dict(state.split_metadata or {})
 
 status_columns = st.columns(4)
 status_columns[0].metric("Ảnh hợp lệ", summary.get("valid_images", "—"))
@@ -86,11 +77,20 @@ with st.expander("Checksum và thao tác dữ liệu", expanded=not bool(summary
     else:
         show_warning("Chưa có checksum. Hãy tải dữ liệu bằng pipeline tin cậy trước.")
 
+    data_action = WorkflowAction.VERIFY_DATA if state.data_ready else WorkflowAction.DOWNLOAD_DATA
     verify_col, eda_col, split_col = st.columns(3)
-    if verify_col.button("Kiểm tra dữ liệu", width="stretch"):
-        _start("download", args={"verify_only": True})
-    if eda_col.button("Tạo lại EDA", width="stretch"):
-        _start("eda")
+    if verify_col.button(
+        "Kiểm tra dữ liệu" if state.data_ready else "Tải dữ liệu",
+        disabled=data_action not in state.allowed_actions,
+        width="stretch",
+    ):
+        _start(data_action)
+    if eda_col.button(
+        "Tạo lại EDA",
+        disabled=WorkflowAction.RUN_EDA not in state.allowed_actions,
+        width="stretch",
+    ):
+        _start(WorkflowAction.RUN_EDA)
 
     confirm_split = st.checkbox(
         "Tôi hiểu thao tác tạo lại split sẽ ghi đè CSV hiện tại.",
@@ -98,11 +98,11 @@ with st.expander("Checksum và thao tác dữ liệu", expanded=not bool(summary
     )
     if split_col.button(
         "Tạo lại split",
-        disabled=not confirm_split,
+        disabled=(not confirm_split or WorkflowAction.CREATE_SPLIT not in state.allowed_actions),
         width="stretch",
         type="secondary",
     ):
-        _start("split")
+        _start(WorkflowAction.CREATE_SPLIT)
 
 if not summary:
     st.info("Chưa có EDA. Bấm **Tạo lại EDA** sau khi dataset đã sẵn sàng.")
@@ -194,7 +194,7 @@ else:
         else:
             st.dataframe(invalid, width="stretch", hide_index=True)
     else:
-        show_warning("Chưa có `invalid_images.csv`.")
+        show_warning("Chưa có invalid_images.csv.")
 
 st.subheader("Train / Validation / Test")
 if not split:
@@ -205,4 +205,4 @@ else:
     split_columns[0].metric("Train", counts.get("train", "—"))
     split_columns[1].metric("Validation", counts.get("validation", "—"))
     split_columns[2].metric("Test", counts.get("test", "—"))
-    st.caption(f"Seed: `{split.get('seed', '—')}` · Fingerprint: `{split.get('fingerprint', '—')}`")
+    st.caption(f"Seed: {split.get('seed', '—')} · Fingerprint: {split.get('fingerprint', '—')}")

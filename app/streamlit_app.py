@@ -5,7 +5,7 @@ from pathlib import Path
 import streamlit as st
 
 from app.components.job_status import render_live_job
-from app.components.layout import inject_styles
+from app.components.layout import inject_styles, render_experiment_selector
 
 APP_ROOT = Path(__file__).resolve().parent
 
@@ -31,6 +31,9 @@ pages = {
 }
 
 with st.sidebar:
+    st.markdown("### Ngữ cảnh làm việc")
+    render_experiment_selector()
+    st.divider()
     st.markdown("### Job đang chạy")
     render_live_job(show_recent=False, compact=True)
     st.divider()

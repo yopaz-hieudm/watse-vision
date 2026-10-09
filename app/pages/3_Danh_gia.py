@@ -1,97 +1,104 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 from app.components.layout import (
-    get_job_manager,
     get_registry,
+    get_workflow_coordinator,
+    get_workflow_state,
     page_header,
     path_label,
+    render_workflow,
     show_error,
     show_success,
     show_warning,
 )
+from realwaste.workflow import WorkflowAction
 
-
-def _read_json(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
+state = get_workflow_state()
+coordinator = get_workflow_coordinator()
+selected_id = state.selected_experiment_id
+experiment_state = state.selected_experiment
+experiment = get_registry().get(selected_id)
 
 page_header(
-    "Đánh giá mô hình",
-    "Chạy Validation/Test cho checkpoint và xem metric, confusion matrix cùng lỗi phổ biến.",
+    f"Đánh giá {selected_id}",
+    "Checkpoint, split và artefact đánh giá được điều phối theo experiment đang chọn.",
 )
+render_workflow("evaluate", state)
 
-registry = get_registry()
-experiments = registry.list()
-available = [
-    experiment
-    for experiment in experiments
-    if experiment.best_checkpoint.is_file() or experiment.last_checkpoint.is_file()
-]
-if not available:
-    st.info("Chưa có checkpoint. Hãy huấn luyện ít nhất một experiment trước.")
+checkpoint_options = []
+if experiment_state.best_checkpoint_compatible:
+    checkpoint_options.append("best")
+if experiment_state.last_checkpoint_compatible:
+    checkpoint_options.append("last")
+
+if not checkpoint_options:
+    st.info(
+        f"{selected_id} chưa có checkpoint tương thích. "
+        "Hãy hoàn thành hoặc kiểm tra lại bước Huấn luyện."
+    )
+    for blocker in experiment_state.blockers:
+        show_warning(blocker)
     st.stop()
 
-experiment_ids = [experiment.experiment_id for experiment in available]
-selected_id = st.selectbox("Experiment", experiment_ids)
-experiment = registry.get(selected_id)
-checkpoint_options = []
-if experiment.best_checkpoint.is_file():
-    checkpoint_options.append("best")
-if experiment.last_checkpoint.is_file():
-    checkpoint_options.append("last")
 checkpoint_kind = st.radio("Checkpoint", checkpoint_options, horizontal=True)
 split = st.radio("Tập dữ liệu", ["test", "validation"], horizontal=True)
-
 checkpoint_path = (
-    experiment.best_checkpoint if checkpoint_kind == "best" else experiment.last_checkpoint
+    experiment_state.best_checkpoint
+    if checkpoint_kind == "best"
+    else experiment_state.last_checkpoint
 )
-st.caption(f"Checkpoint: `{path_label(checkpoint_path)}`")
+st.caption(f"Experiment: {selected_id} · Checkpoint: {path_label(checkpoint_path)}")
 
+evaluate_action = (
+    WorkflowAction.EVALUATE_TEST if split == "test" else WorkflowAction.EVALUATE_VALIDATION
+)
 action_col, gradcam_col = st.columns(2)
-if action_col.button("Chạy đánh giá", type="primary", width="stretch"):
+if action_col.button(
+    "Chạy đánh giá",
+    type="primary",
+    width="stretch",
+    disabled=evaluate_action not in state.allowed_actions,
+):
     try:
-        job = get_job_manager().start_job(
-            "evaluate",
-            selected_id,
-            {"checkpoint": checkpoint_kind, "split": split},
+        job = coordinator.execute(
+            evaluate_action,
+            experiment_id=selected_id,
+            options={"checkpoint": checkpoint_kind},
         )
-        show_success(f"Đã tạo job `{job.job_id}`.")
+        show_success(f"Đã tạo job {job.job_id}.")
+        st.rerun()
     except Exception as error:
         show_error(str(error))
 
-test_predictions = experiment.evaluation_dir("test") / "predictions.csv"
+gradcam_action = WorkflowAction.GENERATE_GRADCAM
 if gradcam_col.button(
     "Tạo Grad-CAM từ Test",
-    disabled=not test_predictions.is_file(),
+    disabled=gradcam_action not in state.allowed_actions,
     width="stretch",
 ):
     try:
-        job = get_job_manager().start_job(
-            "gradcam",
-            selected_id,
-            {"checkpoint": checkpoint_kind, "samples": 20},
+        job = coordinator.execute(
+            gradcam_action,
+            experiment_id=selected_id,
+            options={"checkpoint": checkpoint_kind, "samples": 20},
         )
-        show_success(f"Đã tạo job `{job.job_id}`.")
+        show_success(f"Đã tạo job {job.job_id}.")
+        st.rerun()
     except Exception as error:
         show_error(str(error))
 
+metrics = experiment_state.test_metrics if split == "test" else experiment_state.validation_metrics
 output_dir = experiment.evaluation_dir(split)
 metrics_path = experiment.metrics_path(split)
-metrics = _read_json(metrics_path)
-if not metrics:
-    st.info(f"Chưa có kết quả `{split}` cho {selected_id}.")
+if metrics is None:
+    stale = experiment_state.test_stale if split == "test" else experiment_state.validation_stale
+    message = f"Chưa có kết quả {split} hiện hành cho {selected_id}."
+    if stale:
+        message += " Artefact đang có đã stale và cần đánh giá lại."
+    st.info(message)
     st.stop()
 
 st.subheader("Chỉ số tổng hợp")
@@ -104,7 +111,7 @@ metric_columns[4].metric(
     "Loss",
     "—" if metrics.get("loss") is None else f"{float(metrics['loss']):.4f}",
 )
-st.caption(f"Split fingerprint: `{metrics.get('split_fingerprint', '—')}`")
+st.caption(f"Split fingerprint: {metrics.get('split_fingerprint', '—')}")
 
 figures = output_dir / "figures"
 matrix_columns = st.columns(2)

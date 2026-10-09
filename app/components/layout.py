@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import streamlit as st
 import torch
+
+from realwaste.workflow.state import WorkflowState
 
 WORKFLOW_STEPS = (
     ("data", "Dữ liệu", "Chuẩn bị và kiểm tra"),
@@ -18,6 +21,7 @@ WORKFLOW_STEPS = (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SELECTED_EXPERIMENT_KEY = "realwaste_selected_experiment_id"
 
 
 def inject_styles() -> None:
@@ -212,44 +216,9 @@ def page_header(
     )
 
 
-def _workflow_statuses() -> dict[str, str]:
-    data_ready = (
-        (PROJECT_ROOT / "outputs/eda/dataset_summary.json").is_file()
-        and (PROJECT_ROOT / "data/splits/split_metadata.json").is_file()
-    )
-    experiment_dirs = [
-        PROJECT_ROOT / "outputs/experiments" / name
-        for name in (
-            "mobilenet_v3_small_baseline",
-            "resnet18_baseline",
-            "mobilenet_v3_small_aug",
-            "resnet18_aug",
-        )
-    ]
-    trained_count = sum(
-        (directory / "best.pt").is_file() or (directory / "last.pt").is_file()
-        for directory in experiment_dirs
-    )
-    evaluated_count = sum(
-        (directory / "evaluation/test/metrics.json").is_file()
-        for directory in experiment_dirs
-    )
-    comparison_ready = (
-        PROJECT_ROOT / "outputs/comparison/experiment_summary.csv"
-    ).is_file()
-    return {
-        "data": "complete" if data_ready else "pending",
-        "train": "complete" if trained_count == 4 else "partial" if trained_count else "pending",
-        "evaluate": (
-            "complete" if evaluated_count == 4 else "partial" if evaluated_count else "pending"
-        ),
-        "compare": "complete" if comparison_ready else "pending",
-        "predict": "complete" if trained_count else "pending",
-    }
-
-
-def render_workflow(current: str | None = None) -> None:
-    statuses = _workflow_statuses()
+def render_workflow(current: str | None = None, state: WorkflowState | None = None) -> None:
+    workflow_state = state or get_workflow_state()
+    statuses = workflow_state.workflow_statuses()
     cards: list[str] = []
     for index, (step_id, title, description) in enumerate(WORKFLOW_STEPS, start=1):
         status = statuses[step_id]
@@ -259,7 +228,7 @@ def render_workflow(current: str | None = None) -> None:
         marker = "✓" if status == "complete" else f"0{index}"
         cards.append(
             f"""
-            <div class="{' '.join(classes)}">
+            <div class="{" ".join(classes)}">
                 <div class="rw-step-index">{marker}</div>
                 <div class="rw-step-title">{escape(title)}</div>
                 <div class="rw-step-description">{escape(description)}</div>
@@ -273,9 +242,7 @@ def render_workflow(current: str | None = None) -> None:
 
 
 def section_header(title: str, description: str | None = None) -> None:
-    detail = (
-        f'<p class="rw-section-description">{escape(description)}</p>' if description else ""
-    )
+    detail = f'<p class="rw-section-description">{escape(description)}</p>' if description else ""
     st.markdown(
         f"""
         <div class="rw-section-header">
@@ -294,9 +261,7 @@ def content_panel(
 ) -> Iterator[None]:
     with st.container(border=True):
         if title:
-            st.markdown(
-                f'<p class="rw-panel-heading">{escape(title)}</p>', unsafe_allow_html=True
-            )
+            st.markdown(f'<p class="rw-panel-heading">{escape(title)}</p>', unsafe_allow_html=True)
         if description:
             st.markdown(
                 f'<p class="rw-panel-description">{escape(description)}</p>',
@@ -337,6 +302,46 @@ def get_job_manager():
     from realwaste.ui.job_manager import JobManager
 
     return JobManager(PROJECT_ROOT)
+
+
+@st.cache_resource
+def get_workflow_coordinator():
+    from realwaste.workflow import WorkflowCoordinator
+
+    return WorkflowCoordinator(
+        PROJECT_ROOT,
+        registry=get_registry(),
+        reader=get_reader(),
+        job_manager=get_job_manager(),
+    )
+
+
+def get_selected_experiment_id() -> str:
+    experiment_ids = get_registry().experiment_ids
+    selected = st.session_state.get(SELECTED_EXPERIMENT_KEY)
+    if selected not in experiment_ids:
+        selected = experiment_ids[0]
+        st.session_state[SELECTED_EXPERIMENT_KEY] = selected
+    return str(selected)
+
+
+def render_experiment_selector() -> str:
+    experiment_ids = get_registry().experiment_ids
+    get_selected_experiment_id()
+    selected = st.selectbox(
+        "Experiment đang chọn",
+        experiment_ids,
+        key=SELECTED_EXPERIMENT_KEY,
+        help="Ngữ cảnh này được dùng chung ở Huấn luyện, Đánh giá và Dự đoán.",
+    )
+    experiment = get_registry().get(selected)
+    augmentation = "Có augmentation" if experiment.augmentation_enabled else "Baseline"
+    st.caption(f"{experiment.model_name} · {augmentation}")
+    return str(selected)
+
+
+def get_workflow_state() -> WorkflowState:
+    return get_workflow_coordinator().get_state(get_selected_experiment_id())
 
 
 def device_details() -> tuple[str, str]:

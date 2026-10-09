@@ -7,7 +7,12 @@ from pathlib import Path
 
 import streamlit as st
 
-from app.components.layout import PROJECT_ROOT, format_timestamp, get_job_manager, show_error
+from app.components.layout import (
+    PROJECT_ROOT,
+    format_timestamp,
+    get_workflow_coordinator,
+    show_error,
+)
 
 ACTIVE_STATUSES = {"queued", "running", "stopping"}
 
@@ -125,7 +130,7 @@ def render_job_details(record, *, compact: bool = False) -> None:
             type="secondary",
         ):
             try:
-                get_job_manager().stop_job(job_id, force=True)
+                get_workflow_coordinator().stop_job(job_id, force=True)
                 st.rerun()
             except Exception as error:
                 show_error(str(error))
@@ -133,7 +138,7 @@ def render_job_details(record, *, compact: bool = False) -> None:
         confirm = st.checkbox("Xác nhận dừng job đang chạy", key=f"stop_confirm_{job_id}")
         if st.button("Dừng job", disabled=not confirm, key=f"stop_{job_id}"):
             try:
-                get_job_manager().stop_job(job_id)
+                get_workflow_coordinator().stop_job(job_id)
                 st.rerun()
             except Exception as error:
                 show_error(str(error))
@@ -141,17 +146,16 @@ def render_job_details(record, *, compact: bool = False) -> None:
 
 @st.fragment(run_every=2)
 def render_live_job(*, show_recent: bool = True, compact: bool = False) -> None:
-    manager = get_job_manager()
+    coordinator = get_workflow_coordinator()
     try:
-        active = manager.get_active_job()
+        active = coordinator.get_state().active_job
         if active is not None:
-            active = manager.refresh_job(active.job_id)
             render_job_details(active, compact=compact)
             return
         if show_recent:
-            jobs = manager.list_jobs(limit=1)
-            if jobs:
-                render_job_details(jobs[0], compact=compact)
+            recent = coordinator.get_recent_job()
+            if recent is not None:
+                render_job_details(recent, compact=compact)
                 return
         st.caption("Chưa có job nền.")
     except Exception as error:
