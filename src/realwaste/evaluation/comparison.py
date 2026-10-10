@@ -78,6 +78,7 @@ def collect_experiment_metrics(input_dir: str | Path) -> list[dict]:
             row = {field: metrics[field] for field in SUMMARY_FIELDS}
             row["_seed"] = config.get("seed")
             row["_test_csv"] = str(config.get("data", {}).get("test_csv", ""))
+            row["_feedback_fingerprint"] = config.get("feedback", {}).get("fingerprint")
             rows[experiment_id] = row
     missing_experiments = REQUIRED_EXPERIMENTS - set(rows)
     if missing_experiments:
@@ -91,6 +92,8 @@ def collect_experiment_metrics(input_dir: str | Path) -> list[dict]:
     test_csv_paths = {row["_test_csv"] for row in rows.values()}
     if len(test_csv_paths) != 1 or not next(iter(test_csv_paths)):
         raise ValueError("E1-E4 do not use the same Test CSV")
+    if len({row["_feedback_fingerprint"] for row in rows.values()}) != 1:
+        raise ValueError("E1-E4 do not use the same reviewed feedback snapshot")
     return [
         {field: row[field] for field in SUMMARY_FIELDS}
         for row in sorted(rows.values(), key=lambda row: row["experiment_id"])

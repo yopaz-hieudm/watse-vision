@@ -11,17 +11,24 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
+from uuid import uuid4
 
 import psutil
 
 from realwaste.training.checkpoint import validate_resume_checkpoint
 from realwaste.training.progress import atomic_write_json
+from realwaste.ui.artifact_reader import resolve_within_root
 from realwaste.ui.experiment_registry import ExperimentRegistry
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - the application is currently supported on Unix.
+except ImportError:  # pragma: no cover - Windows uses msvcrt below.
     fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
 
 
 JOB_KINDS = frozenset({"download", "eda", "split", "train", "evaluate", "compare", "gradcam"})
@@ -275,6 +282,7 @@ class JobManager:
                     shell=False,
                     start_new_session=True,
                     text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                 )
                 process_create_time = self._read_process_create_time(process.pid)
                 record = replace(
@@ -308,6 +316,31 @@ class JobManager:
 
     def get_job(self, job_id: str) -> JobRecord:
         return self._read_record(self._job_file(job_id))
+
+    def archive_experiment(self, experiment_id: str) -> Path:
+        """Move a whole run into a unique archive under the same job lock."""
+        with self._manager_lock():
+            active = self._get_active_job_unlocked()
+            if active is not None:
+                raise JobAlreadyRunningError(f"Hãy đợi hoặc dừng job {active.job_id} trước")
+            self._registry.refresh(experiment_id)
+            experiment = self._registry.get(experiment_id)
+            source = resolve_within_root(self.project_root, experiment.output_dir)
+            experiments_root = self.project_root / "outputs/experiments"
+            if source.parent != experiments_root.resolve() or source == experiments_root:
+                raise UnsafeJobOperationError(
+                    "Chỉ lưu trữ thư mục experiment trong outputs/experiments"
+                )
+            if not source.is_dir() or not any(source.iterdir()):
+                raise FileNotFoundError("Experiment chưa có kết quả để lưu trữ")
+            archive_root = resolve_within_root(
+                self.project_root, f"outputs/archive/{experiment.experiment_id}"
+            )
+            destination = archive_root / f"{datetime.now(UTC):%Y%m%dT%H%M%S}_{uuid4().hex[:12]}"
+            resolve_within_root(self.project_root, destination)
+            archive_root.mkdir(parents=True, exist_ok=True)
+            source.rename(destination)
+            return destination
 
     def refresh_job(self, job_id: str) -> JobRecord:
         with self._manager_lock():
@@ -424,6 +457,7 @@ class JobManager:
         if kind in _EXPERIMENT_JOB_KINDS:
             if not experiment_id:
                 raise InvalidJobArgumentsError(f"Job {kind} yêu cầu experiment_id")
+            self._registry.refresh(str(experiment_id))
             return self._registry.get(str(experiment_id)).experiment_id
         if experiment_id is not None:
             raise InvalidJobArgumentsError(f"Job {kind} không nhận experiment_id")
@@ -504,8 +538,11 @@ class JobManager:
         experiment = self._registry.get(experiment_id)
 
         if kind == "train":
-            self._require_keys(args, {"resume"})
+            self._require_keys(args, {"resume", "include_feedback"})
             resume = self._bool_arg(args, "resume", default=False)
+            include_feedback = self._bool_arg(args, "include_feedback", default=False)
+            if resume and include_feedback:
+                raise InvalidJobArgumentsError("Phản hồi mới chỉ được thêm vào phiên train mới")
             command = [
                 sys.executable,
                 "scripts/train.py",
@@ -543,6 +580,11 @@ class JobManager:
                         f"Checkpoint resume không hợp lệ: {error}"
                     ) from error
                 command.extend(["--resume", self._command_path(experiment.last_checkpoint)])
+            if include_feedback:
+                from realwaste.inference.history import PredictionHistory
+
+                manifest = PredictionHistory(self.project_root).create_training_snapshot()
+                command.extend(["--feedback-manifest", self._command_path(manifest)])
             return tuple(command)
 
         if kind == "evaluate":
@@ -647,7 +689,7 @@ class JobManager:
     def _command_path(self, path: Path) -> str:
         resolved = path.expanduser().resolve()
         try:
-            return str(resolved.relative_to(self.project_root))
+            return resolved.relative_to(self.project_root).as_posix()
         except ValueError:
             return str(resolved)
 
@@ -826,11 +868,20 @@ class JobManager:
         with thread_lock, self._lock_path.open("a+", encoding="utf-8") as handle:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                if handle.tell() == 0:
+                    handle.write("0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
             try:
                 yield
             finally:
                 if fcntl is not None:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _is_safe_job_id(value: str) -> bool:

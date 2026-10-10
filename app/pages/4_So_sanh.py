@@ -38,6 +38,7 @@ for experiment in state.experiments.values():
             "Test metrics": "Hiện hành" if metrics else "Thiếu/Stale",
             "Accuracy": metrics.get("accuracy") if metrics else None,
             "Macro-F1": metrics.get("macro_f1") if metrics else None,
+            "Ảnh phản hồi": metrics.get("feedback_count", 0) if metrics else None,
         }
     )
 
@@ -55,6 +56,9 @@ if missing:
     show_warning(f"Cần đánh giá Test hiện hành cho: {', '.join(missing)}.")
 
 compare_action = WorkflowAction.COMPARE_EXPERIMENTS
+if not missing:
+    for blocker in state.blockers_for(compare_action):
+        show_warning(blocker)
 if st.button(
     "Tạo lại bảng so sánh",
     disabled=compare_action not in state.allowed_actions,

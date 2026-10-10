@@ -78,11 +78,16 @@ def test_reader_rejects_path_traversal_and_outside_symlink(tmp_path: Path) -> No
     project.mkdir()
     outside = tmp_path / "secret.json"
     outside.write_text("{}", encoding="utf-8")
-    (project / "link.json").symlink_to(outside)
     reader = ArtifactReader(project)
 
     with pytest.raises(UnsafeArtifactPathError, match="ngoài thư mục dự án"):
         reader.read_json("../secret.json")
+    try:
+        (project / "link.json").symlink_to(outside)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows requires symlink privilege for this part of the check")
+        raise
     with pytest.raises(UnsafeArtifactPathError, match="ngoài thư mục dự án"):
         reader.read_json("link.json")
 

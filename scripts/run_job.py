@@ -66,7 +66,12 @@ def _wait_for_launch(job_file: Path, timeout: float = 10.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         metadata = _read_job(job_file)
-        if metadata.get("pid") == os.getpid() and metadata.get("status") in {
+        # Windows venv launchers can spawn the actual interpreter as a child,
+        # while Popen.pid identifies the launcher that waits for that interpreter.
+        launch_pids = {os.getpid()}
+        if sys.platform == "win32":
+            launch_pids.add(os.getppid())
+        if metadata.get("pid") in launch_pids and metadata.get("status") in {
             "running",
             "stopping",
         }:
@@ -104,7 +109,15 @@ def run(job_file: Path, cwd: Path, command: list[str]) -> int:
         if stop_requested:
             return_code = -signal.SIGTERM
         else:
-            child = subprocess.Popen(command, cwd=cwd, shell=False, text=True)
+            child = subprocess.Popen(
+                command,
+                cwd=cwd,
+                shell=False,
+                text=True,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
             return_code = child.wait()
     except BaseException as caught:
         error = f"Runner failed: {caught}"
@@ -115,7 +128,7 @@ def run(job_file: Path, cwd: Path, command: list[str]) -> int:
 
     try:
         latest = _read_job(job_file)
-        if latest.get("pid") != os.getpid():
+        if latest.get("pid") != metadata.get("pid"):
             raise RuntimeError("Refusing to update metadata owned by another PID")
         stopped = stop_requested or latest.get("status") == "stopping"
         status = "stopped" if stopped else "succeeded" if return_code == 0 else "failed"

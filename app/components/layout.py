@@ -219,26 +219,71 @@ def page_header(
 def render_workflow(current: str | None = None, state: WorkflowState | None = None) -> None:
     workflow_state = state or get_workflow_state()
     statuses = workflow_state.workflow_statuses()
-    cards: list[str] = []
-    for index, (step_id, title, description) in enumerate(WORKFLOW_STEPS, start=1):
+    destinations = {
+        "data": "app/pages/1_Du_lieu.py",
+        "train": "app/pages/2_Huan_luyen.py",
+        "evaluate": "app/pages/3_Danh_gia.py",
+        "compare": "app/pages/4_So_sanh.py",
+        "predict": "app/pages/5_Du_doan.py",
+    }
+    destinations = {key: str(PROJECT_ROOT / path) for key, path in destinations.items()}
+    columns = st.columns(len(WORKFLOW_STEPS))
+    status_labels = {
+        "complete": "Hoàn tất",
+        "partial": "Đang thực hiện",
+        "pending": "Chưa sẵn sàng",
+    }
+    for index, (column, (step_id, title, description)) in enumerate(
+        zip(columns, WORKFLOW_STEPS, strict=True), start=1
+    ):
         status = statuses[step_id]
-        classes = ["rw-workflow-step", f"is-{status}"]
-        if current == step_id:
-            classes.append("is-current")
-        marker = "✓" if status == "complete" else f"0{index}"
-        cards.append(
-            f"""
-            <div class="{" ".join(classes)}">
-                <div class="rw-step-index">{marker}</div>
-                <div class="rw-step-title">{escape(title)}</div>
-                <div class="rw-step-description">{escape(description)}</div>
-            </div>
-            """
+        marker = "✓" if status == "complete" else f"{index:02d}"
+        with column.container(border=True):
+            st.page_link(destinations[step_id], label=f"{marker} · {title}")
+            st.caption(description)
+            detail = status_labels[status]
+            st.caption(f"{detail} · Đang xem" if current == step_id else detail)
+
+    from realwaste.workflow import WorkflowAction
+
+    action = workflow_state.next_action
+    action_routes = {
+        WorkflowAction.DOWNLOAD_DATA: ("data", "Tải dữ liệu"),
+        WorkflowAction.RUN_EDA: ("data", "Kiểm tra dữ liệu và tạo EDA"),
+        WorkflowAction.CREATE_SPLIT: ("data", "Tạo tập Train/Validation/Test"),
+        WorkflowAction.START_TRAINING: ("train", "Huấn luyện experiment đang chọn"),
+        WorkflowAction.RESUME_TRAINING: ("train", "Khôi phục hoặc mở phiên huấn luyện mới"),
+        WorkflowAction.EVALUATE_TEST: ("evaluate", "Đánh giá Test của experiment đang chọn"),
+        WorkflowAction.COMPARE_EXPERIMENTS: ("compare", "Tạo bảng so sánh"),
+    }
+    if workflow_state.active_job is not None:
+        st.info("Job đang chạy. Trạng thái và thao tác sẽ cập nhật khi job kết thúc.")
+    elif (
+        workflow_state.selected_experiment.has_training_artifacts
+        and workflow_state.selected_experiment.compatible_checkpoint is None
+    ):
+        st.page_link(
+            destinations["train"],
+            label="Bước tiếp theo: Lưu kết quả cũ và mở phiên huấn luyện mới",
+            icon="➡️",
         )
-    st.markdown(
-        f'<nav class="rw-workflow" aria-label="Quy trình RealWaste">{"".join(cards)}</nav>',
-        unsafe_allow_html=True,
-    )
+    elif action in action_routes:
+        step_id, label = action_routes[action]
+        st.page_link(destinations[step_id], label=f"Bước tiếp theo: {label}", icon="➡️")
+    else:
+        unfinished = [
+            item.experiment_id
+            for item in workflow_state.experiments.values()
+            if item.test_metrics is None
+        ]
+        if unfinished:
+            st.caption(
+                f"Để hoàn tất so sánh, chọn {', '.join(unfinished)} ở sidebar rồi train/đánh giá."
+            )
+        if workflow_state.inference_checkpoint is not None:
+            st.page_link(
+                destinations["predict"], label="Dự đoán ảnh mới và gửi phản hồi", icon="🔎"
+            )
 
 
 def section_header(title: str, description: str | None = None) -> None:

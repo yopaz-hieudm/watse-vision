@@ -5,9 +5,12 @@ import json
 import shutil
 from pathlib import Path
 
+import torch
+
 from realwaste.config import load_config, save_resolved_config
 from realwaste.constants import CLASS_NAMES
 from realwaste.data.dataloader import build_dataloaders
+from realwaste.inference.history import validate_feedback_snapshot
 from realwaste.models import create_model, set_backbone_trainable
 from realwaste.seed import resolve_device, seed_everything
 from realwaste.training.progress import ProgressReporter
@@ -20,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", type=Path)
     mode.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--feedback-manifest", type=Path)
     parser.add_argument(
         "--progress-path",
         type=Path,
@@ -59,6 +63,16 @@ def prepare_output_directory(
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    if args.resume is not None and args.feedback_manifest is not None:
+        raise ValueError("Resume phải dùng bản chụp phản hồi của phiên cũ")
+    if args.resume is not None:
+        previous = torch.load(args.resume, map_location="cpu", weights_only=False)
+        if feedback := previous["config"].get("feedback"):
+            config["feedback"] = validate_feedback_snapshot(feedback["manifest"], Path.cwd())
+            if config["feedback"]["fingerprint"] != feedback["fingerprint"]:
+                raise ValueError("Bản chụp phản hồi không khớp checkpoint")
+    elif args.feedback_manifest is not None:
+        config["feedback"] = validate_feedback_snapshot(args.feedback_manifest, Path.cwd())
     seed_everything(int(config["seed"]))
     device = resolve_device(str(config.get("device", "auto")))
     split_metadata_path = Path(config["data"]["train_csv"]).parent / "split_metadata.json"

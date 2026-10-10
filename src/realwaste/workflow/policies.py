@@ -94,6 +94,14 @@ def _blockers_for(action: WorkflowAction, facts: WorkflowFacts) -> tuple[str, ..
         missing = [item.experiment_id for item in facts.experiments if item.test_metrics is None]
         if missing:
             reasons.append(f"Thiếu Test metrics hiện hành của: {', '.join(missing)}")
+        else:
+            feedback_versions = {
+                item.test_metrics.get("feedback_fingerprint")
+                for item in facts.experiments
+                if item.test_metrics is not None
+            }
+            if len(feedback_versions) != 1:
+                reasons.append("E1–E4 phải dùng cùng bản chụp phản hồi để so sánh công bằng")
 
     return tuple(dict.fromkeys(reasons))
 

@@ -150,8 +150,11 @@ def render_live_job(*, show_recent: bool = True, compact: bool = False) -> None:
     try:
         active = coordinator.get_state().active_job
         if active is not None:
+            st.session_state["realwaste_observed_active_job"] = active.job_id
             render_job_details(active, compact=compact)
             return
+        if st.session_state.pop("realwaste_observed_active_job", None) is not None:
+            st.rerun(scope="app")
         if show_recent:
             recent = coordinator.get_recent_job()
             if recent is not None:

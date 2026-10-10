@@ -71,3 +71,29 @@ def test_policy_recommends_compare_only_after_all_test_results() -> None:
 
     assert WorkflowAction.COMPARE_EXPERIMENTS in decision.allowed_actions
     assert decision.next_action is WorkflowAction.COMPARE_EXPERIMENTS
+
+
+def test_comparison_blocks_different_feedback_training_cohorts() -> None:
+    from dataclasses import replace
+
+    experiments = tuple(
+        _experiment(experiment_id, checkpoint=True, test_metrics=True)
+        for experiment_id in ("E1", "E2", "E3", "E4")
+    )
+    experiments = (
+        replace(experiments[0], test_metrics={"macro_f1": 0.8, "feedback_fingerprint": "v1"}),
+        *experiments[1:],
+    )
+    decision = evaluate_policy(
+        WorkflowFacts(
+            data_ready=True,
+            eda_ready=True,
+            split_ready=True,
+            selected_experiment=experiments[0],
+            experiments=experiments,
+            active_job=None,
+            comparison_ready=False,
+        )
+    )
+    assert WorkflowAction.COMPARE_EXPERIMENTS not in decision.allowed_actions
+    assert "bản chụp phản hồi" in decision.blockers[WorkflowAction.COMPARE_EXPERIMENTS][0]

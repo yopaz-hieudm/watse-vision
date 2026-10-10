@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from realwaste.data.dataset import CsvImageDataset
 from realwaste.data.transforms import build_transforms
@@ -32,6 +32,13 @@ def build_dataloaders(config: dict[str, Any]):
         "validation": CsvImageDataset(data["val_csv"], data["root"], eval_transform),
         "test": CsvImageDataset(data["test_csv"], data["root"], eval_transform),
     }
+    if feedback := config.get("feedback"):
+        from pathlib import Path
+
+        manifest = Path(feedback["manifest"])
+        datasets["train"] = ConcatDataset(
+            [datasets["train"], CsvImageDataset(manifest, manifest.parent, train_transform)]
+        )
     generator = torch.Generator()
     generator.manual_seed(int(config["seed"]))
     common = {

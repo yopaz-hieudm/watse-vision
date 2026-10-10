@@ -17,6 +17,7 @@ from app.components.layout import (
     show_success,
     show_warning,
 )
+from realwaste.inference.history import PredictionHistory
 from realwaste.workflow import WorkflowAction
 
 state = get_workflow_state()
@@ -61,6 +62,16 @@ with st.expander("Cấu hình chỉ đọc"):
 
 start_action = WorkflowAction.START_TRAINING
 resume_action = WorkflowAction.RESUME_TRAINING
+
+feedback_count = PredictionHistory(coordinator.project_root).reviewed_count()
+include_feedback = st.checkbox(
+    f"Bổ sung ảnh đã xác nhận nhãn vào tập train ({feedback_count} ảnh)",
+    disabled=feedback_count == 0 or start_action not in state.allowed_actions,
+    help=(
+        "Tạo bản chụp phản hồi cho phiên mới; giữ nguyên Validation/Test. "
+        "Resume dùng lại bản chụp cũ."
+    ),
+)
 action_columns = st.columns(2)
 
 if action_columns[0].button(
@@ -70,7 +81,9 @@ if action_columns[0].button(
     width="stretch",
 ):
     try:
-        job = coordinator.execute(start_action, experiment_id=selected_id)
+        job = coordinator.execute(
+            start_action, experiment_id=selected_id, options={"include_feedback": include_feedback}
+        )
         show_success(f"Đã tạo job {job.job_id}.")
         st.rerun()
     except Exception as error:
@@ -99,6 +112,34 @@ if experiment_state.has_training_artifacts:
         "Experiment đã có artefact; train mới được khóa để tránh ghi đè. "
         "Dùng resume khi last.pt còn tương thích."
     )
+
+if experiment.output_dir.is_dir() and any(experiment.output_dir.iterdir()):
+    with st.expander("Mở phiên huấn luyện mới"):
+        st.write(
+            "Lưu toàn bộ checkpoint, lịch sử và đánh giá của phiên hiện tại trước khi làm lại."
+        )
+        confirmed = st.checkbox(
+            f"Lưu trữ kết quả {selected_id} và mở phiên mới", key=f"archive_confirm_{selected_id}"
+        )
+        if st.button(
+            "Lưu trữ và mở phiên mới",
+            disabled=not confirmed or state.active_job is not None,
+            key=f"archive_run_{selected_id}",
+        ):
+            try:
+                destination = coordinator.archive_experiment(selected_id)
+                st.session_state["realwaste_archive_notice"] = path_label(destination)
+                st.rerun()
+            except Exception as error:
+                show_error(str(error))
+if notice := st.session_state.pop("realwaste_archive_notice", None):
+    show_success(f"Đã lưu kết quả cũ tại {notice}. Có thể bắt đầu huấn luyện mới.")
+
+archive_root = coordinator.project_root / "outputs/archive" / selected_id
+if archive_root.is_dir():
+    with st.expander("Các phiên đã lưu trữ"):
+        for archived in sorted(archive_root.iterdir(), reverse=True):
+            st.caption(path_label(archived))
 
 st.subheader("Job nền")
 render_live_job(show_recent=True)

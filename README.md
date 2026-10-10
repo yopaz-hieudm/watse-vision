@@ -103,6 +103,48 @@ progress, Validation/Test evaluation, experiment comparison and image prediction
 Training continues in a separate process, so Streamlit remains responsive. Only the
 fixed E1-E4 configurations and project-local artifact paths are accepted.
 
+On Windows, an existing environment can also launch the UI directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py
+```
+
+The workflow links and the suggested next step connect every page. The selected
+experiment persists across pages; Prediction only offers compatible checkpoints
+from that experiment. Finishing a background job refreshes page state automatically.
+
+To recover an incompatible checkpoint or restart an experiment, open **Huấn luyện →
+Mở phiên huấn luyện mới**. The entire previous run moves to
+`outputs/archive/<E1-E4>/<timestamp>_<id>` before fresh training is enabled.
+Archived runs are preserved; active jobs block this operation.
+
+Prediction results persist in `outputs/predictions/history.sqlite3`, identified by
+the image content and checkpoint SHA-256. Image retention is opt-in. In **Dự đoán →
+Lịch sử và phản hồi**, review retained images and confirm or correct their labels.
+To use those images, start a new training run and select **Bổ sung ảnh đã xác nhận**.
+The job freezes a manifest and images in `outputs/feedback/snapshots/`; resume uses
+that same immutable snapshot. Only the training loader gets extra images.
+Validation/Test images and conflicting labels are rejected. Feedback images are
+shared across experiments, while prediction history is filtered by experiment.
+Comparison requires all four experiments to use the same feedback snapshot.
+
+## Lifecycle verification
+
+After downloading the verified dataset and creating the standard splits, run:
+
+```bash
+uv run python scripts/verify_lifecycle.py
+```
+
+This runs full dataset EDA, then E1-E4 training, Validation/Test evaluation,
+comparison, prediction, persisted history, reviewed feedback, Grad-CAM and training
+with a feedback snapshot. Training uses 36 real images, 18 Validation images,
+18 Test images, 64px inputs and one epoch without pretrained weights. This verifies
+the software lifecycle; it does not establish classifier accuracy.
+The script writes isolated checkpoints, reports and logs in
+`outputs/verification/<run-id>/`, publishes `outputs/verification/latest.json`,
+and displays that report on **Tổng quan**. Standard E1-E4 checkpoints are separate.
+
 ## Quality checks
 
 ```bash

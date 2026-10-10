@@ -48,6 +48,7 @@ class WorkflowCoordinator:
         self.job_manager = job_manager or JobManager(self.project_root)
 
     def get_state(self, selected_experiment_id: str | None = None) -> WorkflowState:
+        self.registry.refresh()
         selected = self.registry.get(selected_experiment_id or self.registry.experiment_ids[0])
         issues: list[str] = []
 
@@ -139,7 +140,7 @@ class WorkflowCoordinator:
         if normalized is WorkflowAction.CREATE_SPLIT:
             return self.job_manager.start_job("split", args=supplied_options)
         if normalized is WorkflowAction.START_TRAINING:
-            return self.job_manager.start_job("train", selected_id)
+            return self.job_manager.start_job("train", selected_id, supplied_options)
         if normalized is WorkflowAction.RESUME_TRAINING:
             return self.job_manager.start_job("train", selected_id, {"resume": True})
         if normalized in {
@@ -168,6 +169,10 @@ class WorkflowCoordinator:
     def get_recent_job(self) -> JobRecord | None:
         jobs = self.job_manager.list_jobs(limit=1)
         return jobs[0] if jobs else None
+
+    def archive_experiment(self, experiment_id: str) -> Path:
+        """Preserve the current run and reopen training, including broken runs."""
+        return self.job_manager.archive_experiment(experiment_id)
 
     def stop_job(self, job_id: str, *, force: bool = False) -> JobRecord:
         active = self.get_state().active_job
@@ -422,6 +427,17 @@ class WorkflowCoordinator:
             item.test_metrics is not None for item in experiments
         ):
             return False
+        if (
+            len(
+                {
+                    item.test_metrics.get("feedback_fingerprint")
+                    for item in experiments
+                    if item.test_metrics is not None
+                }
+            )
+            != 1
+        ):
+            return False
         comparison_dir = self.project_root / "outputs/comparison"
         required = (
             comparison_dir / "experiment_summary.csv",
@@ -446,30 +462,12 @@ class WorkflowCoordinator:
         selected_experiment_id: str,
         experiments: tuple[ExperimentState, ...],
     ) -> Path | None:
-        ranked: list[tuple[float, bool, int, Path]] = []
         for experiment in experiments:
-            compatible = experiment.compatible_checkpoint
-            if compatible is None:
+            if experiment.experiment_id != selected_experiment_id:
                 continue
-            kind, path = compatible
-            score = float("-inf")
-            if experiment.test_metrics is not None:
-                try:
-                    score = float(experiment.test_metrics.get("macro_f1", float("-inf")))
-                except (TypeError, ValueError):
-                    score = float("-inf")
-            ranked.append(
-                (
-                    score,
-                    experiment.experiment_id == selected_experiment_id,
-                    kind == "best",
-                    path,
-                )
-            )
-        if not ranked:
-            return None
-        ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-        return ranked[0][3]
+            compatible = experiment.compatible_checkpoint
+            return compatible[1] if compatible is not None else None
+        return None
 
 
 def _config_signature(config: Mapping[str, Any]) -> str:

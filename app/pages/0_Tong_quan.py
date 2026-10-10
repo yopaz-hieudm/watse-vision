@@ -6,11 +6,13 @@ import streamlit as st
 from app.components.job_status import render_live_job
 from app.components.layout import (
     device_details,
+    get_reader,
     get_workflow_state,
     page_header,
     render_workflow,
     show_warning,
 )
+from realwaste.ui.artifact_reader import ArtifactError
 
 state = get_workflow_state()
 
@@ -19,6 +21,27 @@ page_header(
     "Theo dõi một workflow thống nhất từ dữ liệu đến dự đoán cho bốn thí nghiệm.",
 )
 render_workflow(state=state)
+
+try:
+    verification = get_reader().read_optional_json_object("outputs/verification/latest.json")
+except ArtifactError as error:
+    verification = None
+    show_warning(f"Không đọc được báo cáo kiểm chứng: {error}")
+if verification is not None:
+    with st.expander("Kiểm chứng vòng đời bằng ảnh thật"):
+        st.write(f"Trạng thái: {verification.get('status', 'unknown')}")
+        st.caption(
+            "Chạy thử 1 epoch trên một phần dataset thật để kiểm tra luồng; "
+            "chất lượng model cần được đánh giá bằng E1–E4 đầy đủ."
+        )
+        for step in verification.get("steps", []):
+            st.write(f"✓ {step}")
+        st.download_button(
+            "Tải báo cáo kiểm chứng",
+            data=get_reader().resolve("outputs/verification/latest.json").read_bytes(),
+            file_name="lifecycle_verification.json",
+            mime="application/json",
+        )
 
 dataset = state.dataset_summary or {}
 split = state.split_metadata or {}
@@ -65,11 +88,6 @@ st.dataframe(
         "Test Macro-F1": st.column_config.NumberColumn(format="%.4f"),
     },
 )
-
-if state.next_action is not None:
-    st.info(f"Hành động đề xuất cho {state.selected_experiment_id}: {state.next_action.value}.")
-elif state.active_job is not None:
-    st.info(f"Đang thực hiện job {state.active_job.job_id}.")
 
 st.subheader("Job gần nhất")
 render_live_job(show_recent=True)

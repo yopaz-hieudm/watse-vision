@@ -72,6 +72,8 @@ def main() -> None:
         "checkpoint_path": str(args.checkpoint),
         "split": args.split,
         "split_fingerprint": checkpoint["split_fingerprint"],
+        "feedback_fingerprint": config.get("feedback", {}).get("fingerprint"),
+        "feedback_count": config.get("feedback", {}).get("count", 0),
     }
     metrics = write_evaluation_outputs(
         result,

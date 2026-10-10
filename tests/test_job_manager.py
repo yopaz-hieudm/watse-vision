@@ -284,3 +284,28 @@ def _wait_for_final(manager: JobManager, job_id: str, timeout: float = 5) -> obj
     stdout = manager.tail_log(job_id)
     stderr = manager.tail_log(job_id, "stderr")
     pytest.fail(f"Job did not finish in time. stdout={stdout!r}, stderr={stderr!r}")
+
+
+def test_archive_preserves_broken_run_and_unblocks_fresh_training(copied_project):
+    from realwaste.workflow import WorkflowAction, WorkflowCoordinator
+
+    manager = JobManager(copied_project)
+    experiment = manager._registry.get("E1")
+    experiment.output_dir.mkdir(parents=True)
+    experiment.best_checkpoint.write_bytes(b"broken-model")
+    experiment.history_path.write_text("epoch\n1\n", encoding="utf-8")
+    destination = manager.archive_experiment("E1")
+    assert (destination / "best.pt").read_bytes() == b"broken-model"
+    assert (destination / "history.csv").is_file()
+    assert not experiment.output_dir.exists()
+    state = WorkflowCoordinator(copied_project, job_manager=manager).get_state("E1")
+    assert not state.selected_experiment.has_training_artifacts
+    assert "artefact" not in ";".join(state.blockers_for(WorkflowAction.START_TRAINING))
+
+
+def test_archive_is_blocked_while_any_job_is_active(copied_project, monkeypatch):
+    _fake_launcher(monkeypatch)
+    manager = JobManager(copied_project)
+    manager.start_job("download")
+    with pytest.raises(JobAlreadyRunningError):
+        manager.archive_experiment("E1")

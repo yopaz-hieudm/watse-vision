@@ -35,7 +35,11 @@ class ExperimentState:
 
     @property
     def has_training_artifacts(self) -> bool:
-        return self.has_checkpoint or self.history_path is not None
+        return (
+            self.has_checkpoint
+            or self.history_path is not None
+            or (self.output_dir / "config.yaml").is_file()
+        )
 
     @property
     def compatible_checkpoint(self) -> tuple[str, Path] | None:
@@ -80,7 +84,9 @@ class WorkflowState:
 
     @property
     def trained_experiment_count(self) -> int:
-        return sum(experiment.has_checkpoint for experiment in self.experiments.values())
+        return sum(
+            experiment.compatible_checkpoint is not None for experiment in self.experiments.values()
+        )
 
     @property
     def evaluated_experiment_count(self) -> int:

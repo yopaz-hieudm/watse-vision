@@ -167,7 +167,7 @@ def _test_metrics(root: Path, experiment_id: str, checkpoint: Path) -> None:
     record = ExperimentRegistry(root).get(experiment_id)
     metrics = record.metrics_path("test")
     metrics.parent.mkdir(parents=True, exist_ok=True)
-    relative_checkpoint = checkpoint.relative_to(root)
+    relative_checkpoint = checkpoint.relative_to(root).as_posix()
     metrics.write_text(
         (
             "{"
@@ -262,3 +262,28 @@ def test_compare_requires_four_current_test_results(tmp_path: Path) -> None:
     assert state.evaluated_experiment_count == 4
     assert WorkflowAction.COMPARE_EXPERIMENTS in state.allowed_actions
     assert state.next_action is WorkflowAction.COMPARE_EXPERIMENTS
+
+
+def test_inference_never_switches_to_another_experiment(tmp_path: Path) -> None:
+    root = _project(tmp_path, ready=True)
+    checkpoint = _checkpoint(root, "E1")
+    _test_metrics(root, "E1", checkpoint)
+    coordinator = _coordinator(root)
+    assert coordinator.get_state("E2").inference_checkpoint is None
+    second = _checkpoint(root, "E2")
+    assert coordinator.get_state("E2").inference_checkpoint == second
+
+
+def test_changed_config_is_detected_without_restarting_application(tmp_path: Path) -> None:
+    root = _project(tmp_path, ready=True)
+    _checkpoint(root, "E1")
+    coordinator = _coordinator(root)
+    assert coordinator.get_state("E1").inference_checkpoint is not None
+    path = root / EXPERIMENTS["E1"]
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["training"]["epochs"] = 31
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    state = coordinator.get_state("E1")
+    assert state.inference_checkpoint is None
+    assert state.selected_experiment.has_training_artifacts
+    assert WorkflowAction.RESUME_TRAINING not in state.allowed_actions
