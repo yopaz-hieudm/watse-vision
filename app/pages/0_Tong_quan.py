@@ -1,104 +1,80 @@
 from __future__ import annotations
 
-import pandas as pd
+from html import escape
+
 import streamlit as st
 
 from app.components.job_status import render_live_job
 from app.components.layout import (
-    device_details,
-    get_reader,
     get_workflow_state,
+    model_label,
     page_header,
     render_workflow,
+    section_header,
+    select_experiment,
     show_warning,
 )
-from realwaste.ui.artifact_reader import ArtifactError
 
 state = get_workflow_state()
-
 page_header(
-    "RealWaste Control Center",
-    "Theo dõi một workflow thống nhất từ dữ liệu đến dự đoán cho bốn thí nghiệm.",
+    "Từ ảnh rác thải đến mô hình AI.",
+    "Chuẩn bị dữ liệu, huấn luyện và khám phá kết quả của bốn thí nghiệm trong một không gian.",
+    eyebrow="REALWASTE / TỔNG QUAN",
 )
 render_workflow(state=state)
 
-try:
-    verification = get_reader().read_optional_json_object("outputs/verification/latest.json")
-except ArtifactError as error:
-    verification = None
-    show_warning(f"Không đọc được báo cáo kiểm chứng: {error}")
-if verification is not None:
-    with st.expander("Kiểm chứng vòng đời bằng ảnh thật"):
-        st.write(f"Trạng thái: {verification.get('status', 'unknown')}")
-        st.caption(
-            "Chạy thử 1 epoch trên một phần dataset thật để kiểm tra luồng; "
-            "chất lượng model cần được đánh giá bằng E1–E4 đầy đủ."
-        )
-        for step in verification.get("steps", []):
-            st.write(f"✓ {step}")
-        st.download_button(
-            "Tải báo cáo kiểm chứng",
-            data=get_reader().resolve("outputs/verification/latest.json").read_bytes(),
-            file_name="lifecycle_verification.json",
-            mime="application/json",
-        )
-
 dataset = state.dataset_summary or {}
-split = state.split_metadata or {}
-device_name, device_description = device_details()
-
 metric_columns = st.columns(4)
-metric_columns[0].metric("Dataset", dataset.get("valid_images", "—"), help="Số ảnh hợp lệ")
-metric_columns[1].metric(
-    "Split",
-    sum(split.get("counts", {}).values()) if split.get("counts") else "—",
-    help="Tổng số ảnh trong ba split",
-)
-metric_columns[2].metric("Đã train", f"{state.trained_experiment_count}/4")
-metric_columns[3].metric("Đã Test", f"{state.evaluated_experiment_count}/4")
+image_count = dataset.get("valid_images")
+metric_columns[0].metric("Ảnh trong bộ dữ liệu", f"{image_count:,}" if image_count else "—")
+metric_columns[1].metric("Nhóm rác thải", dataset.get("number_of_classes", "—"))
+metric_columns[2].metric("Đã huấn luyện", f"{state.trained_experiment_count} / 4")
+metric_columns[3].metric("Đã đánh giá Test", f"{state.evaluated_experiment_count} / 4")
 
-st.caption(
-    f"Experiment đang chọn: **{state.selected_experiment_id}** · "
-    f"Thiết bị: **{device_name}** · {device_description}"
-)
 for issue in state.issues:
     show_warning(issue)
 
-st.subheader("Trạng thái E1–E4")
-rows = []
-for experiment in state.experiments.values():
-    test_metrics = experiment.test_metrics or {}
-    rows.append(
-        {
-            "Experiment": experiment.experiment_id,
-            "Model": experiment.model_name,
-            "Augmentation": experiment.augmentation_enabled,
-            "Checkpoint": "Hợp lệ" if experiment.compatible_checkpoint else "Chưa có/Stale",
-            "Test Accuracy": test_metrics.get("accuracy"),
-            "Test Macro-F1": test_metrics.get("macro_f1"),
-            "Bước tiếp theo": experiment.next_action_label,
-        }
-    )
-st.dataframe(
-    pd.DataFrame(rows),
-    hide_index=True,
-    width="stretch",
-    column_config={
-        "Test Accuracy": st.column_config.NumberColumn(format="%.4f"),
-        "Test Macro-F1": st.column_config.NumberColumn(format="%.4f"),
-    },
-)
+section_header("Các thí nghiệm", "Hai kiến trúc mô hình. Hai cách chuẩn bị dữ liệu.")
+experiments = list(state.experiments.values())
+for offset in range(0, len(experiments), 2):
+    for column, experiment in zip(st.columns(2), experiments[offset : offset + 2], strict=False):
+        identifier = experiment.experiment_id
+        metrics = experiment.test_metrics
+        ready = experiment.compatible_checkpoint is not None
+        active = state.active_job
+        running = active is not None and active.experiment_id == identifier
+        label, style = "Chưa huấn luyện", "is-neutral"
+        if running:
+            label, style = "Đang xử lý", ""
+        elif metrics:
+            label, style = "Đã đánh giá", ""
+        elif ready:
+            label, style = "Sẵn sàng đánh giá", ""
+        elif experiment.has_training_artifacts:
+            label, style = "Cần kiểm tra phiên cũ", "is-warning"
+        augmentation = "Có tăng cường dữ liệu" if experiment.augmentation_enabled else "Dữ liệu gốc"
+        score = f"{float(metrics['accuracy']):.2%}" if metrics and "accuracy" in metrics else "—"
+        with column.container(border=True, key=f"experiment_card_{identifier}"):
+            st.markdown(
+                f'<div class="rw-card-top"><span class="rw-experiment-id">{identifier}</span>'
+                f'<span class="rw-badge {style}">{label}</span></div>'
+                f'<p class="rw-model-name">{escape(model_label(experiment.model_name))}</p>'
+                f'<p class="rw-card-detail">{augmentation}</p>'
+                f'<div class="rw-card-score">{score}<small>Accuracy trên Test</small></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                f"Xem kết quả {identifier}"
+                if metrics
+                else (f"Đánh giá {identifier}" if ready else f"Huấn luyện {identifier}"),
+                key=f"open_experiment_{identifier}",
+                on_click=select_experiment,
+                args=(identifier,),
+                width="stretch",
+                icon=":material/arrow_forward:",
+            ):
+                st.switch_page("pages/3_Danh_gia.py" if ready else "pages/2_Huan_luyen.py")
 
-st.subheader("Job gần nhất")
-render_live_job(show_recent=True)
-
-with st.expander("Quy trình đề xuất", expanded=not state.trained_experiment_count):
-    st.markdown(
-        """
-        1. Kiểm tra EDA và split ở trang **Dữ liệu**.
-        2. Chọn E1–E4 một lần ở sidebar và huấn luyện tại trang **Huấn luyện**.
-        3. Đánh giá checkpoint của cùng experiment tại trang **Đánh giá**.
-        4. Khi đủ bốn kết quả Test, tạo bảng ở trang **So sánh**.
-        5. Dùng checkpoint hợp lệ tại trang **Dự đoán**.
-        """
-    )
+section_header("Hoạt động gần đây", "Tiến độ và kết quả của tác vụ mới nhất.")
+with st.container(border=True, key="overview_activity"):
+    render_live_job(show_recent=True)

@@ -34,3 +34,34 @@ st.write(get_selected_experiment_id())
 
     assert app.session_state["realwaste_selected_experiment_id"] == "E3"
     assert any("E3" in item.value for item in app.markdown)
+
+
+def test_reloaded_job_validator_accepts_new_epoch_option(tmp_path, monkeypatch):
+    import shutil
+
+    import app.components.layout as layout
+    import realwaste.ui.job_manager as job_module
+    from realwaste.ui.artifact_reader import ArtifactReader
+    from realwaste.ui.experiment_registry import ExperimentRegistry
+
+    shutil.copytree(PROJECT_ROOT / "configs", tmp_path / "configs")
+    monkeypatch.setattr(layout, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(layout, "get_registry", lambda: ExperimentRegistry(tmp_path))
+    monkeypatch.setattr(layout, "get_reader", lambda: ArtifactReader(tmp_path))
+    current_manager = job_module.JobManager
+
+    class PreviousJobManager(current_manager):
+        def _build_command(self, kind, experiment_id, args, job_dir):
+            self._require_keys(args, {"resume", "include_feedback"})
+            return super()._build_command(kind, experiment_id, args, job_dir)
+
+    monkeypatch.setattr(job_module, "JobManager", PreviousJobManager)
+    previous = layout.get_workflow_coordinator()
+    with pytest.raises(job_module.InvalidJobArgumentsError, match="epochs"):
+        previous.job_manager._build_command("train", "E4", {"epochs": 7}, tmp_path / "job")
+
+    # Streamlit reloads the module; a subsequent page run must use the new validator.
+    monkeypatch.setattr(job_module, "JobManager", current_manager)
+    refreshed = layout.get_workflow_coordinator()
+    command = refreshed.job_manager._build_command("train", "E4", {"epochs": 7}, tmp_path / "job")
+    assert command[command.index("--epochs") + 1] == "7"

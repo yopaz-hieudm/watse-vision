@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 
 import streamlit as st
@@ -51,6 +52,10 @@ def _metric(value) -> str:
     return f"{float(value):.4f}"
 
 
+def _percentage(value) -> str:
+    return "—" if value is None else f"{float(value):.2%}"
+
+
 def _elapsed_time(started_at: str | None, finished_at: str | None) -> str:
     if not started_at:
         return "—"
@@ -76,16 +81,30 @@ def render_job_details(record, *, compact: bool = False) -> None:
         return
     job_id = str(data.get("job_id", ""))
     status = str(data.get("status", "unknown"))
-    icon = {
-        "queued": "🕓",
-        "running": "🔄",
-        "succeeded": "✅",
-        "failed": "❌",
-        "stopping": "⏳",
-        "stopped": "⏹️",
-    }.get(status, "ℹ️")
-    st.markdown(f"**{icon} {data.get('kind', 'job')} · `{status}`**")
-    st.caption(f"ID: `{job_id}` · PID: `{data.get('pid') or '—'}`")
+    status_label = {
+        "queued": "Đang chờ",
+        "running": "Đang chạy",
+        "succeeded": "Hoàn tất",
+        "failed": "Có lỗi",
+        "stopping": "Đang dừng",
+        "stopped": "Đã dừng",
+    }.get(status, status)
+    kind_label = {
+        "train": "Huấn luyện",
+        "evaluate": "Đánh giá",
+        "gradcam": "Giải thích dự đoán",
+        "download": "Tải dữ liệu",
+        "eda": "Kiểm tra dữ liệu",
+        "split": "Chia tập dữ liệu",
+        "compare": "So sánh mô hình",
+    }.get(data.get("kind"), "Tác vụ")
+    title = f"{kind_label} · {data['experiment_id']}" if data.get("experiment_id") else kind_label
+    style = "is-error" if status == "failed" else "is-neutral" if status == "stopped" else ""
+    st.markdown(
+        f'<div class="rw-job-header"><span class="rw-job-title">{escape(title)}</span>'
+        f'<span class="rw-badge {style}">{escape(status_label)}</span></div>',
+        unsafe_allow_html=True,
+    )
     if compact:
         return
 
@@ -93,24 +112,36 @@ def render_job_details(record, *, compact: bool = False) -> None:
     if progress:
         epoch = int(progress.get("epoch", 0))
         total = max(int(progress.get("total_epochs", 1)), 1)
-        st.progress(min(epoch / total, 1.0), text=f"Epoch {epoch}/{total}")
-        metric_columns = st.columns(5)
-        metric_columns[0].metric("Train loss", _metric(progress.get("train_loss")))
-        metric_columns[1].metric("Val loss", _metric(progress.get("val_loss")))
-        metric_columns[2].metric("Val Accuracy", _metric(progress.get("val_accuracy")))
-        metric_columns[3].metric("Val Macro-F1", _metric(progress.get("val_macro_f1")))
-        metric_columns[4].metric("Learning rate", _metric(progress.get("learning_rate")))
+        st.progress(
+            min(epoch / total, 1.0),
+            text=f"Đã hoàn thành {epoch} epoch · Giới hạn {total} epoch",
+        )
+        if status == "succeeded":
+            st.caption(f"Phiên này đã kết thúc sau {epoch} epoch; giới hạn cấu hình là {total}.")
+        metric_columns = st.columns(3)
+        metric_columns[0].metric("Accuracy · Validation", _percentage(progress.get("val_accuracy")))
+        metric_columns[1].metric("Macro-F1 · Validation", _percentage(progress.get("val_macro_f1")))
+        metric_columns[2].metric("Macro-F1 tốt nhất", _percentage(progress.get("best_metric")))
 
     st.caption(
         f"Bắt đầu: {format_timestamp(data.get('started_at'))} · "
-        f"Thời gian chạy: {_elapsed_time(data.get('started_at'), data.get('finished_at'))} · "
-        f"Kết thúc: {format_timestamp(data.get('finished_at'))} · "
-        f"Exit code: {data.get('exit_code') if data.get('exit_code') is not None else '—'}"
+        f"Thời gian chạy: {_elapsed_time(data.get('started_at'), data.get('finished_at'))}"
     )
 
     job_dir = PROJECT_ROOT / "outputs/jobs" / job_id
     stdout, stderr = _tail(job_dir / "stdout.log"), _tail(job_dir / "stderr.log")
-    with st.expander("Log gần nhất"):
+    if status == "failed" and data.get("error"):
+        show_error(str(data["error"]))
+    with st.expander("Chi tiết kỹ thuật và nhật ký"):
+        st.caption(
+            f"ID: {job_id} · PID: {data.get('pid') or '—'} · Exit code: {data.get('exit_code')}"
+        )
+        if progress:
+            st.caption(
+                f"Train loss: {_metric(progress.get('train_loss'))} · "
+                f"Validation loss: {_metric(progress.get('val_loss'))} · "
+                f"Learning rate: {_metric(progress.get('learning_rate'))}"
+            )
         if stdout:
             st.code(stdout, language=None)
         if stderr:
@@ -160,6 +191,10 @@ def render_live_job(*, show_recent: bool = True, compact: bool = False) -> None:
             if recent is not None:
                 render_job_details(recent, compact=compact)
                 return
-        st.caption("Chưa có job nền.")
+        st.caption(
+            "Chưa có tác vụ đang chạy."
+            if compact
+            else "Chọn thí nghiệm và bắt đầu một phiên học để xem tiến độ tại đây."
+        )
     except Exception as error:
         st.caption(f"Không đọc được trạng thái job: {error}")

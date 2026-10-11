@@ -23,13 +23,17 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", type=Path)
     mode.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--epochs", type=int, help="Override the maximum number of training epochs")
     parser.add_argument("--feedback-manifest", type=Path)
     parser.add_argument(
         "--progress-path",
         type=Path,
         help="Write the latest epoch progress as atomic JSON for an external UI",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.epochs is not None and args.epochs <= 0:
+        parser.error("--epochs must be positive")
+    return args
 
 
 def prepare_output_directory(
@@ -63,6 +67,8 @@ def prepare_output_directory(
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    if args.epochs is not None:
+        config["training"]["epochs"] = args.epochs
     if args.resume is not None and args.feedback_manifest is not None:
         raise ValueError("Resume phải dùng bản chụp phản hồi của phiên cũ")
     if args.resume is not None:

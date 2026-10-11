@@ -7,8 +7,8 @@ from app.components.layout import (
     PROJECT_ROOT,
     get_workflow_coordinator,
     get_workflow_state,
+    model_label,
     page_header,
-    render_workflow,
     show_error,
     show_success,
     show_warning,
@@ -20,9 +20,9 @@ coordinator = get_workflow_coordinator()
 
 page_header(
     "So sánh E1–E4",
-    "Xếp hạng các Test metrics hiện hành trên cùng split fingerprint.",
+    "So sánh độ chính xác và ảnh hưởng của tăng cường dữ liệu trên cùng tập Test.",
+    eyebrow="REALWASTE / KẾT QUẢ VÀ ỨNG DỤNG",
 )
-render_workflow("compare", state)
 
 rows = []
 missing = []
@@ -32,12 +32,16 @@ for experiment in state.experiments.values():
         missing.append(experiment.experiment_id)
     rows.append(
         {
-            "Experiment": experiment.experiment_id,
-            "Model": experiment.model_name,
-            "Augmentation": experiment.augmentation_enabled,
-            "Test metrics": "Hiện hành" if metrics else "Thiếu/Stale",
-            "Accuracy": metrics.get("accuracy") if metrics else None,
-            "Macro-F1": metrics.get("macro_f1") if metrics else None,
+            "Thí nghiệm": experiment.experiment_id,
+            "Mô hình": model_label(experiment.model_name),
+            "Tăng cường dữ liệu": "Có" if experiment.augmentation_enabled else "Không",
+            "Trạng thái": "Đã đánh giá" if metrics else "Cần đánh giá",
+            "Accuracy": float(metrics["accuracy"]) * 100
+            if metrics and "accuracy" in metrics
+            else None,
+            "Macro-F1": float(metrics["macro_f1"]) * 100
+            if metrics and "macro_f1" in metrics
+            else None,
             "Ảnh phản hồi": metrics.get("feedback_count", 0) if metrics else None,
         }
     )
@@ -47,13 +51,18 @@ st.dataframe(
     width="stretch",
     hide_index=True,
     column_config={
-        "Accuracy": st.column_config.NumberColumn(format="%.4f"),
-        "Macro-F1": st.column_config.NumberColumn(format="%.4f"),
+        "Accuracy": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100),
+        "Macro-F1": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100),
     },
 )
 
 if missing:
     show_warning(f"Cần đánh giá Test hiện hành cho: {', '.join(missing)}.")
+    st.page_link(
+        str(PROJECT_ROOT / "app/pages/3_Danh_gia.py"),
+        label="Đến trang Đánh giá để bổ sung kết quả",
+        icon=":material/arrow_forward:",
+    )
 
 compare_action = WorkflowAction.COMPARE_EXPERIMENTS
 if not missing:
@@ -99,4 +108,4 @@ if state.comparison_ready:
         mime="text/csv",
     )
 else:
-    st.info("Chưa có artefact so sánh hiện hành. Hãy đánh giá đủ E1–E4 trên Test và tạo lại bảng.")
+    st.info("Bảng xếp hạng sẽ sẵn sàng sau khi cả bốn thí nghiệm được đánh giá trên tập Test.")

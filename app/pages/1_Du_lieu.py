@@ -52,7 +52,7 @@ def _load_thumbnail(path: str, modified_ns: int) -> bytes:
 state = get_workflow_state()
 page_header(
     "Dữ liệu RealWaste",
-    "Kiểm tra archive, xem EDA và quản lý split dùng chung cho toàn bộ E1–E4.",
+    "Khám phá các nhóm ảnh và chuẩn bị tập Train, Validation, Test dùng chung cho E1–E4.",
 )
 render_workflow("data", state)
 
@@ -67,7 +67,7 @@ status_columns[0].metric("Ảnh hợp lệ", summary.get("valid_images", "—"))
 status_columns[1].metric("Ảnh lỗi", summary.get("invalid_images", "—"))
 status_columns[2].metric("Số lớp", summary.get("number_of_classes", "—"))
 status_columns[3].metric(
-    "Split",
+    "Ảnh đã chia tập",
     sum(split.get("counts", {}).values()) if split.get("counts") else "—",
 )
 

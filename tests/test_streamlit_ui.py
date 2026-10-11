@@ -57,7 +57,9 @@ def test_prediction_history_can_be_reviewed_even_without_current_checkpoint(tmp_
     assert not app.exception
     label_selector = next(item for item in app.selectbox if item.label == "Nhãn đúng")
     label_selector.select("Paper")
-    app.checkbox[0].check()
+    next(
+        item for item in app.checkbox if item.label == "Tôi đã kiểm tra ảnh và xác nhận nhãn này"
+    ).check()
     next(item for item in app.button if item.label == "Lưu nhãn xác nhận").click().run()
     assert not app.exception
     assert history.list("E1")[0]["reviewed_label"] == "Paper"

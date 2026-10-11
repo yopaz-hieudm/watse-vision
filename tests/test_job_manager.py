@@ -133,6 +133,35 @@ def test_second_active_job_is_blocked(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("epochs", [1, 12, 60])
+def test_training_job_passes_selected_epochs(copied_project, monkeypatch, epochs):
+    _fake_launcher(monkeypatch)
+    manager = JobManager(copied_project)
+    record = manager.start_job("train", "E4", {"epochs": epochs})
+    assert record.command[record.command.index("--epochs") + 1] == str(epochs)
+    assert record.command[record.command.index("--config") + 1] == "configs/resnet18_aug.yaml"
+
+
+@pytest.mark.parametrize("epochs", [0, -1, True, 2.5, "30"])
+def test_training_job_rejects_invalid_epochs(copied_project, monkeypatch, epochs):
+    calls = _fake_launcher(monkeypatch)
+    with pytest.raises(InvalidJobArgumentsError):
+        JobManager(copied_project).start_job("train", "E4", {"epochs": epochs})
+    assert calls == []
+
+
+def test_resume_keeps_saved_epoch_budget(copied_project, monkeypatch):
+    _touch_evaluation_inputs(copied_project)
+    _fake_launcher(monkeypatch)
+    monkeypatch.setattr(
+        job_manager_module,
+        "validate_resume_checkpoint",
+        lambda *_args, **_kwargs: {"config": {"training": {"epochs": 60}}},
+    )
+    record = JobManager(copied_project).start_job("train", "E1", {"resume": True})
+    assert record.command[record.command.index("--epochs") + 1] == "60"
+
+
 def test_train_evaluate_and_gradcam_paths_are_derived_from_registry(
     copied_project: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -483,6 +483,11 @@ def _config_signature(config: Mapping[str, Any]) -> str:
             "checkpoint",
         )
     }
+    # Epoch budget is chosen per run; it does not change the experiment identity.
+    # Keep all other training settings in the compatibility check.
+    relevant["training"] = {
+        key: value for key, value in config.get("training", {}).items() if key != "epochs"
+    }
     return json.dumps(
         relevant,
         ensure_ascii=False,

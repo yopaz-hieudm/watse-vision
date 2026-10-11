@@ -14,8 +14,6 @@ from app.components.layout import (
     format_timestamp,
     get_workflow_state,
     page_header,
-    path_label,
-    render_workflow,
     show_error,
 )
 from realwaste.constants import CLASS_NAMES
@@ -56,20 +54,27 @@ def render_prediction(state: WorkflowState, history: PredictionHistory) -> None:
             "Experiment đang chọn chưa có checkpoint tương thích. "
             "Chuyển tới Huấn luyện để tạo model."
         )
+        st.page_link(
+            str(PROJECT_ROOT / "app/pages/2_Huan_luyen.py"),
+            label="Đến trang Huấn luyện để tạo mô hình",
+            icon=":material/arrow_forward:",
+        )
         return
     selected_id = state.selected_experiment_id
     labels = [label for label, _path in checkpoints]
-    selected_label = st.selectbox("Checkpoint", labels, key=f"prediction_checkpoint_{selected_id}")
+    option_columns = st.columns([2, 1])
+    selected_label = option_columns[0].selectbox(
+        "Phiên bản mô hình", labels, key=f"prediction_checkpoint_{selected_id}"
+    )
     checkpoint = dict(checkpoints)[selected_label]
-    top_k = st.slider("Số lớp hiển thị", min_value=1, max_value=5, value=3)
-    st.caption(f"Experiment: {selected_id} · Model: {path_label(checkpoint)}")
+    top_k = option_columns[1].slider("Số lớp hiển thị", min_value=1, max_value=5, value=3)
     with st.form(f"prediction_form_{selected_id}"):
         uploaded = st.file_uploader("Tải ảnh cần phân loại", type=["jpg", "jpeg", "png", "webp"])
         retain_image = st.checkbox(
             "Cho phép lưu ảnh để xác nhận nhãn và cải thiện lần huấn luyện sau",
             help="Nếu không chọn, lịch sử chỉ lưu thông tin kết quả, không lưu ảnh.",
         )
-        submitted = st.form_submit_button("Dự đoán và lưu kết quả", type="primary")
+        submitted = st.form_submit_button("Dự đoán và lưu kết quả", type="primary", width="stretch")
     result_key = f"prediction_result_{selected_id}"
     signature = (str(checkpoint), checkpoint.stat().st_mtime_ns)
     if submitted:
@@ -199,8 +204,11 @@ def render_history(history: PredictionHistory, selected_id: str) -> None:
 
 
 state = get_workflow_state()
-page_header("Dự đoán ảnh rác", "Phân loại bằng experiment đang chọn, lưu kết quả và xác nhận nhãn.")
-render_workflow("predict", state)
+page_header(
+    "Bức ảnh này thuộc nhóm rác nào?",
+    "Tải lên một ảnh để mô hình phân loại. Xem độ tin cậy và xác nhận nhãn nếu cần.",
+    eyebrow="REALWASTE / KẾT QUẢ VÀ ỨNG DỤNG",
+)
 history = PredictionHistory(PROJECT_ROOT)
 render_prediction(state, history)
 render_history(history, state.selected_experiment_id)

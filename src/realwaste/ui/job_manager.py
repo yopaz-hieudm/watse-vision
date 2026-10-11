@@ -538,8 +538,15 @@ class JobManager:
         experiment = self._registry.get(experiment_id)
 
         if kind == "train":
-            self._require_keys(args, {"resume", "include_feedback"})
+            self._require_keys(args, {"resume", "include_feedback", "epochs"})
             resume = self._bool_arg(args, "resume", default=False)
+            if resume and "epochs" in args:
+                raise InvalidJobArgumentsError("Tiếp tục phiên cũ phải giữ số epoch đã lưu")
+            epochs = self._int_arg(
+                args, "epochs", default=int(experiment.config["training"]["epochs"])
+            )
+            if epochs <= 0:
+                raise InvalidJobArgumentsError("epochs phải là số nguyên dương")
             include_feedback = self._bool_arg(args, "include_feedback", default=False)
             if resume and include_feedback:
                 raise InvalidJobArgumentsError("Phản hồi mới chỉ được thêm vào phiên train mới")
@@ -551,6 +558,8 @@ class JobManager:
                 "--progress-path",
                 self._command_path(job_dir / "progress.json"),
             ]
+            if "epochs" in args:
+                command.extend(["--epochs", str(epochs)])
             if resume:
                 if not experiment.last_checkpoint.is_file():
                     raise FileNotFoundError(
@@ -569,7 +578,7 @@ class JobManager:
                         f"Split metadata không hợp lệ: {split_metadata_path}"
                     ) from error
                 try:
-                    validate_resume_checkpoint(
+                    checkpoint = validate_resume_checkpoint(
                         experiment.last_checkpoint,
                         expected_split_fingerprint=split_fingerprint,
                         expected_experiment_id=experiment.experiment_id,
@@ -579,6 +588,9 @@ class JobManager:
                     raise InvalidJobArgumentsError(
                         f"Checkpoint resume không hợp lệ: {error}"
                     ) from error
+                saved_epochs = checkpoint.get("config", {}).get("training", {}).get("epochs")
+                if saved_epochs is not None:
+                    command.extend(["--epochs", str(saved_epochs)])
                 command.extend(["--resume", self._command_path(experiment.last_checkpoint)])
             if include_feedback:
                 from realwaste.inference.history import PredictionHistory

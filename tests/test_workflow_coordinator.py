@@ -196,6 +196,68 @@ def test_missing_dataset_recommends_download_and_blocks_training(tmp_path: Path)
     assert WorkflowAction.START_TRAINING not in state.allowed_actions
 
 
+def test_custom_epoch_budget_keeps_checkpoint_usable(tmp_path):
+    root = _project(tmp_path, ready=True)
+    checkpoint = _checkpoint(root, "E4")
+    payload = torch.load(checkpoint, weights_only=False)
+    payload["config"]["training"]["epochs"] = 12
+    torch.save(payload, checkpoint)
+    state = _coordinator(root).get_state("E4")
+    assert state.selected_experiment.best_checkpoint_compatible
+    assert state.inference_checkpoint == checkpoint
+    assert WorkflowAction.EVALUATE_TEST in state.allowed_actions
+
+
+def test_training_controls_select_experiment_and_pass_epochs(tmp_path, monkeypatch):
+    app_test = pytest.importorskip("streamlit.testing.v1").AppTest
+    import app.components.job_status as job_status
+    import app.components.layout as layout
+
+    root = _project(tmp_path, ready=True)
+    manager = _FakeJobManager()
+    coordinator = _coordinator(root, manager)
+    monkeypatch.setattr(layout, "get_registry", lambda: coordinator.registry)
+    monkeypatch.setattr(layout, "get_reader", lambda: coordinator.reader)
+    monkeypatch.setattr(layout, "get_workflow_coordinator", lambda: coordinator)
+    monkeypatch.setattr(layout, "render_workflow", lambda *_args: None)
+    monkeypatch.setattr(job_status, "render_live_job", lambda **_kwargs: None)
+    page = layout.PROJECT_ROOT / "app/pages/2_Huan_luyen.py"
+    app = app_test.from_string(
+        "import runpy\n"
+        "import streamlit as st\n"
+        "from app.components.layout import render_experiment_selector\n"
+        "with st.sidebar:\n"
+        "    render_experiment_selector()\n"
+        f"runpy.run_path({str(page)!r})\n",
+        default_timeout=30,
+    ).run()
+    assert not app.exception
+    app.selectbox(key="training_experiment").select("E4").run()
+    assert app.session_state[layout.SELECTED_EXPERIMENT_KEY] == "E4"
+    assert app.selectbox(key=layout.SELECTED_EXPERIMENT_KEY).value == "E4"
+    app.number_input(key="training_epochs_E4").set_value(12).run()
+    next(item for item in app.button if item.label == "Bắt đầu huấn luyện mới").click().run()
+    assert not app.exception
+    assert manager.calls == [("train", "E4", {"include_feedback": False, "epochs": 12})]
+    assert not any(item.label == "Cấu hình chỉ đọc" for item in app.expander)
+    checkpoint = _checkpoint(root, "E4")
+    payload = torch.load(checkpoint, weights_only=False)
+    payload["config"]["training"]["epochs"] = 12
+    torch.save(payload, checkpoint)
+    (checkpoint.parent / "config.yaml").write_text(
+        yaml.safe_dump(payload["config"]), encoding="utf-8"
+    )
+    app.run()
+    assert not app.exception
+    assert app.number_input(key="training_epochs_E4").value == 12
+    assert app.number_input(key="training_epochs_E4").disabled
+    app.selectbox(key=layout.SELECTED_EXPERIMENT_KEY).select("E2").run()
+    assert app.selectbox(key="training_experiment").value == "E2"
+    assert not app.number_input(key="training_epochs_E2").disabled
+    assert not app.exception
+    assert app.session_state[layout.SELECTED_EXPERIMENT_KEY] == "E2"
+
+
 def test_ready_project_recommends_training_for_selected_experiment(tmp_path: Path) -> None:
     coordinator = _coordinator(_project(tmp_path, ready=True))
 
@@ -281,7 +343,7 @@ def test_changed_config_is_detected_without_restarting_application(tmp_path: Pat
     assert coordinator.get_state("E1").inference_checkpoint is not None
     path = root / EXPERIMENTS["E1"]
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
-    config["training"]["epochs"] = 31
+    config["training"]["optimizer"]["learning_rate"] = 0.01
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
     state = coordinator.get_state("E1")
     assert state.inference_checkpoint is None

@@ -24,7 +24,7 @@ experiment = get_registry().get(selected_id)
 
 page_header(
     f"Đánh giá {selected_id}",
-    "Checkpoint, split và artefact đánh giá được điều phối theo experiment đang chọn.",
+    "Đo độ chính xác trên ảnh chưa dùng để học và tìm những nhóm rác mô hình dễ nhầm.",
 )
 render_workflow("evaluate", state)
 
@@ -43,14 +43,27 @@ if not checkpoint_options:
         show_warning(blocker)
     st.stop()
 
-checkpoint_kind = st.radio("Checkpoint", checkpoint_options, horizontal=True)
-split = st.radio("Tập dữ liệu", ["test", "validation"], horizontal=True)
+with st.container(border=True):
+    choice_columns = st.columns(2)
+    checkpoint_kind = choice_columns[0].radio(
+        "Phiên bản mô hình",
+        checkpoint_options,
+        horizontal=True,
+        format_func=lambda kind: "Tốt nhất · best" if kind == "best" else "Vòng cuối · last",
+    )
+    split = choice_columns[1].radio(
+        "Tập dữ liệu",
+        ["test", "validation"],
+        horizontal=True,
+        format_func=lambda value: "Test" if value == "test" else "Validation",
+    )
 checkpoint_path = (
     experiment_state.best_checkpoint
     if checkpoint_kind == "best"
     else experiment_state.last_checkpoint
 )
-st.caption(f"Experiment: {selected_id} · Checkpoint: {path_label(checkpoint_path)}")
+with st.expander("Thông tin mô hình"):
+    st.caption(f"Thí nghiệm: {selected_id} · Tệp mô hình: {path_label(checkpoint_path)}")
 
 evaluate_action = (
     WorkflowAction.EVALUATE_TEST if split == "test" else WorkflowAction.EVALUATE_VALIDATION
@@ -103,10 +116,10 @@ if metrics is None:
 
 st.subheader("Chỉ số tổng hợp")
 metric_columns = st.columns(5)
-metric_columns[0].metric("Accuracy", f"{float(metrics.get('accuracy', 0)):.4f}")
-metric_columns[1].metric("Macro Precision", f"{float(metrics.get('macro_precision', 0)):.4f}")
-metric_columns[2].metric("Macro Recall", f"{float(metrics.get('macro_recall', 0)):.4f}")
-metric_columns[3].metric("Macro-F1", f"{float(metrics.get('macro_f1', 0)):.4f}")
+metric_columns[0].metric("Accuracy", f"{float(metrics.get('accuracy', 0)):.2%}")
+metric_columns[1].metric("Macro Precision", f"{float(metrics.get('macro_precision', 0)):.2%}")
+metric_columns[2].metric("Macro Recall", f"{float(metrics.get('macro_recall', 0)):.2%}")
+metric_columns[3].metric("Macro-F1", f"{float(metrics.get('macro_f1', 0)):.2%}")
 metric_columns[4].metric(
     "Loss",
     "—" if metrics.get("loss") is None else f"{float(metrics['loss']):.4f}",

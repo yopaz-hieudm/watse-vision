@@ -101,7 +101,13 @@ uv run streamlit run app/streamlit_app.py
 The interface provides dataset/EDA inspection, background E1-E4 training with live
 progress, Validation/Test evaluation, experiment comparison and image prediction.
 Training continues in a separate process, so Streamlit remains responsive. Only the
-fixed E1-E4 configurations and project-local artifact paths are accepted.
+E1-E4 model/data presets and project-local artifact paths are accepted.
+
+On **Huấn luyện**, choose E1-E4 directly and set **Số epoch tối đa** before starting
+a new run. The default is 30; early stopping can finish sooner. The chosen budget is
+saved in the run configuration and checkpoints. Existing runs display their saved
+budget, and resume keeps it; archive the run to choose a new budget for a fresh run.
+The CLI also accepts `python scripts/train.py --config <config.yaml> --epochs 12`.
 
 On Windows, an existing environment can also launch the UI directly:
 
